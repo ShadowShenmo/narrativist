@@ -34,6 +34,10 @@ they read with intention and come back to deepen their understanding.
    `state/{book_slug}-bookmark.json`. When the user says "继续读{书名}" or
    provides the same EPUB again, restore from bookmark. The bookmark stores:
    current position, reader_signals, reading_schedule, and completed groups.
+6. **Silent execution**: All shell/Python scripts run silently. Never print source code
+   or full dumps to the console. Use `2>&1 | tail -1` or equivalent to emit only
+   one-line status summaries (e.g. "TOC parsed: 3 entries" / "EPUB extracted: 144K chars").
+   If a script fails, print the error message only, not the full traceback.
 
 ## Chapter Loop — 模式路由
 
