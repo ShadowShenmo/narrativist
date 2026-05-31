@@ -1,0 +1,11 @@
+{
+  "name": "novel-reader",
+  "version": "2.2.0",
+  "description": "叙事学深度阅读引擎 — 四模式自诊断、12类引导问题、三层外部知识注入、跨会话书签",
+  "author": {
+    "name": "ShadowShenmo"
+  },
+  "repository": "https://github.com/ShadowShenmo/novel-reader",
+  "keywords": ["阅读", "文学", "小说", "叙事学", "读书", "epub"],
+  "categories": ["阅读", "教育"]
+}
