@@ -91,7 +91,7 @@ they read with intention and come back to deepen their understanding.
 
 ---
 
-## Initialization（简化流程）
+## Initialization（两阶段设计）
 
 ### 环境要求
 
@@ -102,63 +102,30 @@ they read with intention and come back to deepen their understanding.
 
 本 skill 支持 Mac、Linux、Windows（Git Bash）三种平台。所有文件操作统一使用 Python 处理，避免平台差异。
 
-### 快速开始（推荐）
+### 两阶段初始化
 
-**一键初始化**：使用内置的跨平台脚本
+**阶段一：快速初始化（<1秒）** — 解析 TOC，生成书籍列表，不提取文本
 
 ```bash
-# 进入 skill 目录
-cd ~/.claude/skills/narrativist
-
-# 运行初始化脚本
 python scripts/init_book.py "path/to/your/book.epub"
 ```
 
-脚本会自动完成：
-1. ✅ 计算 EPUB SHA256
-2. ✅ 解压 EPUB
-3. ✅ 解析元数据（书名、作者）
-4. ✅ 解析目录结构
-5. ✅ 提取章节纯文本
-6. ✅ 模式诊断（standard_chapter / grouped_epic / anthology / short / library）
-7. ✅ 生成 progress.json（含 characters、reader_signals、reading_schedule 等完整字段）
-8. ✅ 创建输出目录
-9. ✅ 创建书签（会话持久化）
+脚本完成：SHA256 → 解压 → 解析元数据 → 解析 TOC → 生成 books 列表 → 创建 progress.json 和书签
 
-**输出示例**：
+输出：图书馆视图（多书）或章节目录（单书）
+
+**阶段二：按需提取（<1秒/书）** — 用户选书后，只提取该书文本
+
+```bash
+python scripts/init_book.py "path/to/your/book.epub" --extract N
 ```
-正在初始化: /path/to/book.epub
-计算 SHA256...
-SHA256: 1b11afa7dc47fe18
-解压 EPUB...
-解压完成: state/1b11afa7dc47fe18_extracted
-解析元数据...
-书名: 追寻逝去的时光(第1卷):去斯万家那边
-作者: 周克希
-解析目录结构...
-目录条目: 3
-结构类型: structured
-提取章节...
-提取完成: 3 章/部
-模式诊断...
-模式: standard_chapter
-生成进度文件...
-进度文件: state/1b11afa7dc47fe18-progress.json
-输出目录: output/1b11afa7dc47fe18
-书签文件: state/1b11afa7dc47fe18-bookmark.json
 
-==================================================
-✅ 初始化完成!
-书名: 追寻逝去的时光(第1卷):去斯万家那边
-作者: 周克希
-章节数: 3
-总字数: 341,136 字
-模式: standard_chapter
-SHA256: 1b11afa7dc47fe18
-==================================================
+脚本完成：提取第 N 本书的文本 → 保留章节边界 → 模式诊断 → 更新 progress.json
 
-已加载《追寻逝去的时光(第1卷):去斯万家那边》，共 3 章/部。准备好了就开始第一章？
-```
+**设计原则**：
+- 不预提取用户未选择的书
+- 每本书的章节边界独立保留（不合并）
+- 类型检测基于 TOC 结构自动判断，不需要用户确认
 
 ---
 
@@ -193,58 +160,48 @@ $PYTHON_CMD --version 2>&1 | tail -1
 - **Linux**: `sudo apt-get install python3` 或 `sudo yum install python3`
 - **Windows**: 从 https://www.python.org/downloads/ 下载并安装，勾选 "Add Python to PATH"
 
-#### Step 0-9: 脚本流程（init_book.py 自动执行）
+#### 阶段一：快速初始化（init_book.py，<1秒）
 
-详见 `scripts/init_book.py` 源码，包含以下步骤：
+```bash
+python scripts/init_book.py "path/to/book.epub"
+```
 
-0. **Bookmark check**：计算 EPUB SHA256，检查是否已有进度
-1. **创建目录**：`state/` 和 `output/`
-2. **解压 EPUB**：使用 Python zipfile
-3. **解析元数据**：从 OPF 文件提取书名、作者
-4. **解析目录结构**：解析 toc.ncx，检测书籍结构类型
-5. **提取章节**：按结构类型提取纯文本到 `state/chapters/`
-6. **模式诊断**：基于章节数和内容特征（standard_chapter / grouped_epic / anthology / short / library）
-7. **生成进度文件**：`state/{book_sha}-progress.json`（含 characters、reader_signals、reading_schedule 等完整字段）
-8. **创建输出目录**：`output/{book_sha}/`
-9. **创建书签**：`state/{book_sha}-bookmark.json`（会话持久化）
+自动完成：
+0. 计算 SHA256
+1. 解压 EPUB
+2. 解析元数据（书名、作者）
+3. 解析 TOC 结构 → 构建书籍列表（多书）或章节目录（单书）
+4. 模式诊断（基于 TOC 结构自动判断）
+5. 生成 progress.json（书籍元数据，无文本）
+6. 创建书签
 
-#### Step 10: 类型检测（四层兜底，必须完成）
+**输出**：图书馆视图（多书合集）或章节目录（单书）。用户选书后进入阶段二。
 
-类型是整个 skill 的基础。模式（standard_chapter / grouped_epic / anthology / short / library）决定后续一切流程。**类型未确定前，不得进入章节循环。**
+#### 阶段二：按需提取（init_book.py --extract N，<1秒/书）
 
-四层按顺序执行，任一层成功即停止：
+```bash
+python scripts/init_book.py "path/to/book.epub" --extract N
+```
 
-**第一层：网络搜索**
-- 搜索 "{书名} {作者}" 或 "{书名} 豆瓣/维基百科"
-- 从结果中提取：体裁（长篇/中篇/短篇集/合集）、文学流派、难度参考
-- 成功 → 更新 progress.json.mode，进入 Step 11
-- 失败 → 进入第二层
+自动完成：
+1. 提取第 N 本书的文本（保留章节边界）
+2. 模式诊断（该书内部的章节结构）
+3. 更新 progress.json（填充章节数据）
 
-**第二层：目录结构分析**
-- 分析 TOC 结构：
-  - 3 层嵌套，L2 为独立书名（如"司汤达集 > 红与黑 > 第一部"）→ `library`
-  - 2 层，L1 为容器（如"第一辑 > 麦琪的礼物"）→ `anthology`
-  - 标题含"篇""故事""短篇""小说集"等关键词 → `anthology`
-  - 标题为连续叙事章节（"第一部""第二部"…）→ `standard_chapter` / `grouped_epic`
-  - 仅 1 章或无 TOC → `short`（待第三层确认细分）
-- 成功 → 更新 progress.json.mode，进入 Step 11
-- 模糊 → 进入第三层
+**不做的事**：
+- 不预提取其他书的文本
+- 不合并章节（每章独立文件）
+- 不需要用户确认（除非类型真正模糊）
 
-**第三层：序言/内容采样**
-- 读取第一个 spine 文件（通常为序言），检测关键词：
-  - "本集收录""短篇小说集""N个故事" → `anthology`
-  - "中篇小说""长篇小说" → 对应模式
-  - "全集""选集""文集" → `library`
-- 如无序言，读取各章前 500 字，比较人物名重叠度：
-  - 各章人物完全无交集 → `anthology`
-  - 人物连续 → `standard_chapter` / `grouped_epic`
-- 成功 → 更新 progress.json.mode，进入 Step 11
-- 仍无法判断 → 进入第四层
+#### Step 10: 类型确认
 
-**第四层：询问用户（终极兜底）**
-- 输出已有信息（书名、作者、章节数、TOC 结构），列出候选模式
-- 用户确认或指定类型
-- 更新 progress.json.mode，进入 Step 11
+init_book.py 已基于 TOC 结构自动判断模式。Claude 运行时只需：
+
+1. **确认**：检查 progress.json.mode 是否合理（TOC 结构 + 章节数）
+2. **覆盖**：如发现模式不合理（如 1 章但文本 >3 万字，应为 short 而非 standard_chapter），更新 mode
+3. **仅在真正模糊时询问用户**：如 TOC 无结构、无序言、无法判断
+
+大多数情况不需要网络搜索或用户确认。TOC 结构已经足够准确。
 
 #### Step 11: 类型声明
 

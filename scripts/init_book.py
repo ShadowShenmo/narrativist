@@ -2,17 +2,14 @@
 """
 Narrativist Skill - 跨平台书籍初始化脚本
 
-用法：
-    python init_book.py <epub_path>
+两阶段设计：
+  阶段一：python init_book.py <epub_path>
+    → 快速初始化（<10秒）：SHA256、解压、解析 TOC、生成 books 列表
+    → 输出 progress.json（含 books 元数据，无文本内容）
 
-功能：
-1. 计算 EPUB SHA256
-2. 解压 EPUB
-3. 解析元数据
-4. 提取章节文本
-5. 模式诊断（standard_chapter / grouped_epic / anthology / short / library）
-6. 生成 progress.json（含 characters、relationships 等完整字段）
-7. 创建输出目录
+  阶段二：python init_book.py <epub_path> --extract <book_index>
+    → 按需提取：只提取指定书的文本，保留章节边界
+    → 更新 progress.json（填充该书的 chapters 和文本）
 """
 
 import sys
@@ -68,10 +65,8 @@ def extract_epub(epub_path, extract_dir):
 
 
 def parse_metadata(extract_dir):
-    """解析 OPF 元数据"""
+    """解析 OPF 元数据，提取书名和作者"""
     opf_path = None
-
-    # 查找 OPF 文件
     for root, dirs, files in os.walk(extract_dir):
         for f in files:
             if f.endswith('.opf'):
@@ -81,7 +76,6 @@ def parse_metadata(extract_dir):
     if not opf_path:
         raise FileNotFoundError("OPF file not found in EPUB")
 
-    # 解析 OPF
     tree = ET.parse(opf_path)
     root = tree.getroot()
 
@@ -90,13 +84,17 @@ def parse_metadata(extract_dir):
         'dc': 'http://purl.org/dc/elements/1.1/'
     }
 
-    # 获取元数据
     title = root.find('.//dc:title', ns)
     author = root.find('.//dc:creator', ns)
+
+    # 尝试提取所有作者（合集可能有多个）
+    authors = root.findall('.//dc:creator', ns)
+    author_list = [a.text for a in authors if a.text]
 
     return {
         'title': title.text if title is not None else 'Unknown',
         'author': author.text if author is not None else 'Unknown',
+        'authors': author_list,
         'opf_path': opf_path
     }
 
@@ -106,11 +104,8 @@ def parse_spine(opf_path):
     tree = ET.parse(opf_path)
     root = tree.getroot()
 
-    ns = {
-        'opf': 'http://www.idpf.org/2007/opf',
-    }
+    ns = {'opf': 'http://www.idpf.org/2007/opf'}
 
-    # 获取 manifest
     manifest = root.find('.//opf:manifest', ns)
     manifest_items = {}
     for item in manifest.findall('opf:item', ns):
@@ -119,7 +114,6 @@ def parse_spine(opf_path):
         media_type = item.get('media-type')
         manifest_items[item_id] = {'href': href, 'media-type': media_type}
 
-    # 获取 spine
     spine = root.find('.//opf:spine', ns)
     spine_items = []
     for itemref in spine.findall('opf:itemref', ns):
@@ -135,11 +129,10 @@ def parse_spine(opf_path):
 
 
 def parse_toc_ncx(extract_dir):
-    """解析 toc.ncx 目录结构"""
+    """解析 toc.ncx 目录结构，返回带层级的条目列表"""
     ncx_path = os.path.join(extract_dir, 'toc.ncx')
 
     if not os.path.exists(ncx_path):
-        # 尝试查找其他可能的目录文件
         for root, dirs, files in os.walk(extract_dir):
             for f in files:
                 if f.endswith('.ncx') or f == 'nav.xhtml':
@@ -152,7 +145,6 @@ def parse_toc_ncx(extract_dir):
     try:
         tree = ET.parse(ncx_path)
         root = tree.getroot()
-
         ns = {'ncx': 'http://www.daisy.org/z3986/2005/ncx/'}
 
         toc_entries = []
@@ -162,19 +154,15 @@ def parse_toc_ncx(extract_dir):
             content = navpoint.find('ncx:content', ns)
 
             if label is not None and content is not None:
-                title = label.text
-                src = content.get('src')
                 toc_entries.append({
                     'level': level,
-                    'title': title,
-                    'src': src
+                    'title': label.text,
+                    'src': content.get('src')
                 })
 
-            # 递归处理子项
             for child in navpoint.findall('ncx:navPoint', ns):
                 parse_navpoint(child, level + 1)
 
-        # 解析 navMap
         nav_map = root.find('ncx:navMap', ns)
         if nav_map is not None:
             for navpoint in nav_map.findall('ncx:navPoint', ns):
@@ -187,25 +175,73 @@ def parse_toc_ncx(extract_dir):
         return None
 
 
-def detect_book_structure(toc_entries, spine_items):
-    """根据目录结构检测书籍类型和章节组织
+# ── 阶段一：快速初始化 ──────────────────────────────────────────
 
-    支持两种 TOC 结构：
-    1. 单书多章：L0 为章节（"第一部""第二部"等）
-    2. 多书合集：L0 为书名，L1 为各书的章节
+def quick_init(epub_path):
+    """阶段一：快速初始化（<10秒）
+
+    返回 dict：
+      sha, title, author, extract_dir, books(list of {name, files, level})
+    """
+    sha = calculate_sha256(epub_path)
+
+    # 解压
+    skill_dir = Path(__file__).parent.parent
+    state_dir = skill_dir / 'state'
+    extract_dir = state_dir / f'{sha}_extracted'
+
+    if not extract_dir.exists():
+        extract_epub(epub_path, extract_dir)
+
+    # 元数据
+    metadata = parse_metadata(extract_dir)
+
+    # TOC
+    toc_entries = parse_toc_ncx(extract_dir)
+    spine_items = parse_spine(metadata['opf_path'])
+
+    # 构建书籍列表
+    books = build_books_list(toc_entries, spine_items, extract_dir)
+
+    return {
+        'sha': sha,
+        'title': metadata['title'],
+        'author': metadata['author'],
+        'authors': metadata['authors'],
+        'extract_dir': str(extract_dir),
+        'spine_items': spine_items,
+        'books': books,
+        'toc_entries': toc_entries
+    }
+
+
+def build_books_list(toc_entries, spine_items, extract_dir):
+    """从 TOC 构建书籍列表（只解析结构，不提取文本）
+
+    返回 list of dict：
+      {name, type, files(list of spine hrefs), estimated_chars}
     """
     if not toc_entries:
-        return {
-            'type': 'sequential',
-            'chapters': [{'name': f'Chapter {i+1}', 'files': [item['href']]} for i, item in enumerate(spine_items)]
-        }
+        # 无 TOC，整本书作为一个条目
+        return [{
+            'name': 'Unknown',
+            'type': 'single',
+            'files': [s['href'] for s in spine_items if s['media_type'] == 'application/xhtml+xml'],
+            'estimated_chars': 0
+        }]
 
-    # 检查是否有 L1+ 条目（多层结构）
     has_children = any(e.get('level', 0) > 0 for e in toc_entries)
 
+    # 跳过非内容页
+    skip_keywords = ['扉页', '版权页', '目录', '封底', 'imaginist',
+                     '附录', '译名表', '致谢', '注解与参考文献',
+                     'title page', 'copyright', 'colophon']
+
+    def is_skip(title):
+        return any(kw in title for kw in skip_keywords)
+
     if has_children:
-        # 多层 TOC：L0 为书/部，L1 为章节
-        # 构建层级结构
+        # 多层 TOC：L0 = 书名，L1 = 章节
         books = []
         current_book = None
 
@@ -214,263 +250,213 @@ def detect_book_structure(toc_entries, spine_items):
             title = entry['title']
             src = entry['src'].split('#')[0]
 
-            # 跳过扉页、版权页、目录、封底等非内容页
-            skip_titles = ['扉页', '版权页', '目录', '封底', '理想国·imaginist',
-                           '附录', '译名表', '致谢', '注解与参考文献',
-                           'title page', 'copyright', 'table of contents']
-            if any(st in title for st in skip_titles):
+            if is_skip(title):
                 continue
 
             if level == 0:
-                # 新的书/部
                 if current_book:
                     books.append(current_book)
                 current_book = {
                     'name': title,
-                    'files': [src]
+                    'type': 'multi_chapter',
+                    'files': [src],
+                    'chapters': []  # L1 children
                 }
             elif level >= 1 and current_book:
-                # 属于当前书/部的章节
+                current_book['chapters'].append({
+                    'name': title,
+                    'file': src
+                })
                 if src not in current_book['files']:
                     current_book['files'].append(src)
 
         if current_book:
             books.append(current_book)
 
-        if books:
-            # 为每本书收集所有相关的 spine 文件
-            for book in books:
-                base_files = book['files'].copy()
-                all_files = []
-                for base_file in base_files:
-                    file_prefix = base_file.split('_')[0] if '_' in base_file else base_file.replace('.html', '').replace('.xhtml', '')
-                    for spine_item in spine_items:
-                        spine_href = spine_item['href']
-                        if spine_href.startswith(file_prefix):
-                            if spine_href not in all_files:
-                                all_files.append(spine_href)
-                book['files'] = all_files if all_files else base_files
+        # 展开 spine 匹配
+        for book in books:
+            expanded = expand_files(book['files'], spine_items)
+            book['files'] = expanded
+            book['estimated_chars'] = estimate_chars(expanded, extract_dir)
 
-            return {
-                'type': 'multi_book',
-                'chapters': books
-            }
-
-    # 单层 TOC 或无子条目：检测是否为"部"结构
-    parts = []
-    current_part = None
-
-    for entry in toc_entries:
-        title = entry['title']
-        src = entry['src']
-
-        # 跳过非内容页
-        skip_titles = ['扉页', '版权页', '目录', '封底', '理想国·imaginist',
-                       '附录', '译名表', '致谢', '注解与参考文献']
-        if any(st in title for st in skip_titles):
-            continue
-
-        is_part = any(keyword in title for keyword in ['第', '部', 'Part', 'part', '卷', 'Volume'])
-
-        if is_part:
-            if current_part:
-                parts.append(current_part)
-            current_part = {
-                'name': title,
-                'files': [src.split('#')[0]]
-            }
-        elif current_part:
-            file_name = src.split('#')[0]
-            if file_name not in current_part['files']:
-                current_part['files'].append(file_name)
-
-    if current_part:
-        parts.append(current_part)
-
-    if parts:
-        for part in parts:
-            base_files = part['files'].copy()
-            all_files = []
-            for base_file in base_files:
-                file_prefix = base_file.split('_')[0] if '_' in base_file else base_file.replace('.html', '').replace('.xhtml', '')
-                for spine_item in spine_items:
-                    spine_href = spine_item['href']
-                    if spine_href.startswith(file_prefix):
-                        if spine_href not in all_files:
-                            all_files.append(spine_href)
-            part['files'] = all_files if all_files else base_files
-
-        return {
-            'type': 'structured',
-            'chapters': parts
-        }
-
-    # 回退：使用目录条目作为章节
-    return {
-        'type': 'toc_based',
-        'chapters': [{'name': entry['title'], 'files': [entry['src'].split('#')[0]]} for entry in toc_entries]
-    }
-
-
-def extract_chapters(extract_dir, spine_items, chapters_dir, book_structure=None):
-    """提取章节纯文本"""
-    os.makedirs(chapters_dir, exist_ok=True)
-
-    # 如果有书籍结构信息，按结构提取（structured 和 multi_book 逻辑相同）
-    if book_structure and book_structure['type'] in ('structured', 'multi_book'):
-        chapters = []
-        for i, part in enumerate(book_structure['chapters']):
-            all_text = []
-            for file_name in part['files']:
-                file_path = os.path.join(extract_dir, file_name)
-                if not os.path.exists(file_path):
-                    # 尝试查找文件
-                    for root_dir, dirs, files in os.walk(extract_dir):
-                        for f in files:
-                            if f == file_name or file_name.endswith(f):
-                                file_path = os.path.join(root_dir, f)
-                                break
-
-                if os.path.exists(file_path):
-                    try:
-                        with open(file_path, 'r', encoding='utf-8') as f:
-                            content = f.read()
-
-                        parser = HTMLTextExtractor()
-                        parser.feed(content)
-                        text = parser.get_text()
-
-                        # 清理文本
-                        text = re.sub(r'\n\s*\n', '\n\n', text)
-                        text = text.strip()
-
-                        if len(text) > 100:
-                            all_text.append(text)
-                    except Exception as e:
-                        print(f"Warning: Failed to process {file_name}: {e}", file=sys.stderr)
-
-            # 合并该部分的所有文本
-            if all_text:
-                combined_text = '\n\n'.join(all_text)
-                chapter_file = os.path.join(chapters_dir, f'part{i+1}.txt')
-                with open(chapter_file, 'w', encoding='utf-8') as f:
-                    f.write(combined_text)
-
-                chapters.append({
-                    'index': i + 1,
-                    'name': part['name'],
-                    'file': f'part{i+1}.txt',
-                    'length': len(combined_text)
-                })
-
-        return chapters
+        return books
 
     else:
-        # 没有结构信息，按顺序提取
+        # 单层 TOC：检测是否为"部"结构
+        parts = []
+        current_part = None
+
+        for entry in toc_entries:
+            title = entry['title']
+            src = entry['src']
+
+            if is_skip(title):
+                continue
+
+            is_part = any(kw in title for kw in ['第', '部', 'Part', 'part', '卷', 'Volume'])
+
+            if is_part:
+                if current_part:
+                    parts.append(current_part)
+                current_part = {
+                    'name': title,
+                    'type': 'single',
+                    'files': [src.split('#')[0]]
+                }
+            elif current_part:
+                f = src.split('#')[0]
+                if f not in current_part['files']:
+                    current_part['files'].append(f)
+
+        if current_part:
+            parts.append(current_part)
+
+        if parts:
+            for part in parts:
+                expanded = expand_files(part['files'], spine_items)
+                part['files'] = expanded
+                part['estimated_chars'] = estimate_chars(expanded, extract_dir)
+            return parts
+
+        # 回退：每个 TOC 条目是一个章节
         chapters = []
-        chapter_count = 0
-
-        for item in spine_items:
-            if item['media_type'] == 'application/xhtml+xml':
-                href = item['href']
-                file_path = os.path.join(extract_dir, href)
-
-                # 如果文件不存在，尝试查找
-                if not os.path.exists(file_path):
-                    for root_dir, dirs, files in os.walk(extract_dir):
-                        for f in files:
-                            if f == href or href.endswith(f):
-                                file_path = os.path.join(root_dir, f)
-                                break
-
-                if os.path.exists(file_path):
-                    try:
-                        with open(file_path, 'r', encoding='utf-8') as f:
-                            content = f.read()
-
-                        parser = HTMLTextExtractor()
-                        parser.feed(content)
-                        text = parser.get_text()
-
-                        # 清理文本
-                        text = re.sub(r'\n\s*\n', '\n\n', text)
-                        text = text.strip()
-
-                        # 只保存有实质内容的章节
-                        if len(text) > 100:
-                            chapter_count += 1
-                            chapter_file = os.path.join(chapters_dir, f'ch{chapter_count:02d}.txt')
-                            with open(chapter_file, 'w', encoding='utf-8') as f:
-                                f.write(text)
-
-                            chapters.append({
-                                'index': chapter_count,
-                                'name': f'Chapter {chapter_count}',
-                                'file': f'ch{chapter_count:02d}.txt',
-                                'length': len(text)
-                            })
-                    except Exception as e:
-                        print(f"Warning: Failed to process {href}: {e}", file=sys.stderr)
-
+        for entry in toc_entries:
+            if not is_skip(entry['title']):
+                chapters.append({
+                    'name': entry['title'],
+                    'type': 'single',
+                    'files': [entry['src'].split('#')[0]],
+                    'estimated_chars': 0
+                })
         return chapters
 
 
-def diagnose_mode(chapters):
-    """三阶段智能诊断
+def expand_files(base_files, spine_items):
+    """将基础文件名展开为完整的 spine 文件列表"""
+    all_files = []
+    for base_file in base_files:
+        prefix = base_file.split('_')[0] if '_' in base_file else \
+                 base_file.replace('.html', '').replace('.xhtml', '')
+        for item in spine_items:
+            if item['href'].startswith(prefix):
+                if item['href'] not in all_files:
+                    all_files.append(item['href'])
+    return all_files if all_files else base_files
 
-    阶段 A：TOC 层级信号 — 基于章节数和结构类型
-    阶段 B：内容特征 — 检测章节标题中的关键词
-    阶段 C：综合判定 — 返回最终模式
+
+def estimate_chars(files, extract_dir):
+    """快速估算文本字数（只读前 500 字采样）"""
+    if not files:
+        return 0
+    sample_file = files[0]
+    for root, dirs, fs in os.walk(extract_dir):
+        for f in fs:
+            if f == sample_file or sample_file.endswith(f):
+                try:
+                    with open(os.path.join(root, f), 'r', encoding='utf-8') as fh:
+                        text = fh.read(2000)
+                    parser = HTMLTextExtractor()
+                    parser.feed(text)
+                    clean = parser.get_text().strip()
+                    # 按比例估算
+                    avg_chars_per_file = len(clean) * (len(files) / 1)
+                    return int(avg_chars_per_file)
+                except:
+                    return 0
+    return 0
+
+
+# ── 阶段二：按需提取 ──────────────────────────────────────────
+
+def extract_book(extract_dir, book_info, chapters_dir, book_index):
+    """阶段二：提取指定书的文本
+
+    book_info: build_books_list 返回的单个 book dict
+    返回 list of chapter dicts: [{index, name, file, length}]
     """
-    num_chapters = len(chapters)
-    chapter_names = [ch['name'].lower() for ch in chapters]
+    os.makedirs(chapters_dir, exist_ok=True)
+    chapters = []
 
-    # 阶段 A：章节数信号
+    if book_info.get('chapters'):
+        # 多章：每章一个文件
+        for i, ch_info in enumerate(book_info['chapters']):
+            text = extract_single_file(extract_dir, ch_info['file'])
+            if text and len(text) > 50:
+                ch_file = f'book{book_index}_ch{i+1:02d}.txt'
+                with open(os.path.join(chapters_dir, ch_file), 'w', encoding='utf-8') as f:
+                    f.write(text)
+                chapters.append({
+                    'index': i + 1,
+                    'name': ch_info['name'],
+                    'file': ch_file,
+                    'length': len(text)
+                })
+    else:
+        # 单文件或合并文件
+        all_text = []
+        for file_name in book_info['files']:
+            text = extract_single_file(extract_dir, file_name)
+            if text and len(text) > 50:
+                all_text.append(text)
+
+        if all_text:
+            combined = '\n\n'.join(all_text)
+            ch_file = f'book{book_index}_ch01.txt'
+            with open(os.path.join(chapters_dir, ch_file), 'w', encoding='utf-8') as f:
+                f.write(combined)
+            chapters.append({
+                'index': 1,
+                'name': book_info['name'],
+                'file': ch_file,
+                'length': len(combined)
+            })
+
+    return chapters
+
+
+def extract_single_file(extract_dir, file_name):
+    """从解压目录中提取单个文件的纯文本"""
+    for root, dirs, files in os.walk(extract_dir):
+        for f in files:
+            if f == file_name or file_name.endswith(f):
+                try:
+                    with open(os.path.join(root, f), 'r', encoding='utf-8') as fh:
+                        content = fh.read()
+                    parser = HTMLTextExtractor()
+                    parser.feed(content)
+                    text = parser.get_text()
+                    text = re.sub(r'\n\s*\n', '\n\n', text)
+                    return text.strip()
+                except Exception as e:
+                    print(f"Warning: Failed to process {file_name}: {e}", file=sys.stderr)
+                    return None
+    return None
+
+
+def diagnose_mode(num_chapters, chapter_names=None):
+    """模式诊断"""
     if num_chapters == 0:
         return 'short'
-
     if num_chapters == 1:
-        # 单章/单篇 — 可能是短篇或短文
         return 'short'
 
-    # 阶段 B：内容特征分析
-    # 检测是否为合集类（标题含"篇""故事""短篇"等）
-    anthology_keywords = ['篇', '故事', '短篇', '小说', 'tale', 'story', 'stories']
-    has_anthology_signal = any(
-        any(kw in name for kw in anthology_keywords)
-        for name in chapter_names
-    )
+    if chapter_names:
+        anthology_kw = ['篇', '故事', '短篇', '小说', 'tale', 'story', 'stories']
+        if any(any(kw in n.lower() for kw in anthology_kw) for n in chapter_names):
+            return 'anthology'
 
-    # 检测是否为嵌套结构（标题含"卷""册""书"等）
-    library_keywords = ['卷', '册', '书', '集', 'volume', 'book']
-    has_library_signal = any(
-        any(kw in name for kw in library_keywords)
-        for name in chapter_names
-    )
-
-    # 检测是否为史诗级长篇（章节间人物高度重叠，标题多为地名人名）
-    # 简化判断：章节数 > 20 或章节数 > 10 且无合集信号
-    is_long_narrative = num_chapters > 20 or (num_chapters > 10 and not has_anthology_signal)
-
-    # 阶段 C：综合判定
-    if has_library_signal and num_chapters >= 3:
-        return 'library'
-
-    if has_anthology_signal and num_chapters >= 3:
-        return 'anthology'
-
-    if is_long_narrative:
+    if num_chapters > 20:
         return 'grouped_epic'
 
-    # 默认：标准章节模式
     return 'standard_chapter'
 
 
-def generate_progress(book_sha, title, author, mode, chapters, output_path):
+# ── 进度文件管理 ──────────────────────────────────────────────
+
+def create_progress(sha, title, author, mode, chapters, output_path, books=None):
     """生成 progress.json"""
-    total_chars = sum(ch['length'] for ch in chapters)
     progress = {
-        'book_sha': book_sha,
+        'book_sha': sha,
         'title': title,
         'author': author,
         'mode': mode,
@@ -493,158 +479,222 @@ def generate_progress(book_sha, title, author, mode, chapters, output_path):
         'reader_signals': []
     }
 
+    if books:
+        progress['books'] = books
+        progress['current_book'] = 0
+
     with open(output_path, 'w', encoding='utf-8') as f:
         json.dump(progress, f, ensure_ascii=False, indent=2)
 
     return progress
 
 
-def main():
-    if len(sys.argv) < 2:
-        print("用法: python init_book.py <epub_path>")
-        sys.exit(1)
-
-    epub_path = sys.argv[1]
-
-    # 验证文件存在
-    if not os.path.exists(epub_path):
-        print(f"错误: 文件不存在: {epub_path}")
-        sys.exit(1)
-
-    # 设置路径
-    skill_dir = Path(__file__).parent.parent
-    state_dir = skill_dir / 'state'
-    chapters_dir = state_dir / 'chapters'
-
-    print(f"正在初始化: {epub_path}")
-
-    # Step 0: 计算 SHA256
-    print("计算 SHA256...")
-    book_sha = calculate_sha256(epub_path)
-    print(f"SHA256: {book_sha}")
-
-    # 检查是否已存在
-    progress_path = state_dir / f'{book_sha}-progress.json'
-    bookmark_path = state_dir / f'{book_sha}-bookmark.json'
-
-    if bookmark_path.exists():
-        print(f"发现已有书签: {bookmark_path}")
-        print("是否继续初始化？这将覆盖现有进度。(y/N)")
-        response = input().strip().lower()
-        if response != 'y':
-            print("已取消初始化")
-            sys.exit(0)
-
-    # Step 1: 创建目录
-    print("创建目录...")
-    os.makedirs(state_dir, exist_ok=True)
-    os.makedirs(chapters_dir, exist_ok=True)
-
-    # Step 2: 解压 EPUB
-    print("解压 EPUB...")
-    extract_dir = state_dir / f'{book_sha}_extracted'
-    extract_epub(epub_path, extract_dir)
-    print(f"解压完成: {extract_dir}")
-
-    # Step 3: 解析元数据
-    print("解析元数据...")
-    metadata = parse_metadata(extract_dir)
-    print(f"书名: {metadata['title']}")
-    print(f"作者: {metadata['author']}")
-
-    # Step 4: 解析目录结构
-    print("解析目录结构...")
-    toc_entries = parse_toc_ncx(extract_dir)
-    spine_items = parse_spine(metadata['opf_path'])
-
-    if toc_entries:
-        print(f"目录条目: {len(toc_entries)}")
-        book_structure = detect_book_structure(toc_entries, spine_items)
-        print(f"结构类型: {book_structure['type']}")
-    else:
-        print("未找到目录文件，按顺序提取")
-        book_structure = None
-
-    # Step 5: 提取章节
-    print("提取章节...")
-    chapters = extract_chapters(extract_dir, spine_items, chapters_dir, book_structure)
-    print(f"提取完成: {len(chapters)} 章/部")
-
-    # Step 6: 模式诊断
-    print("模式诊断...")
-    mode = diagnose_mode(chapters)
-    # 如果 TOC 结构为多书合集，强制使用 library 模式
-    if book_structure and book_structure['type'] == 'multi_book':
-        mode = 'library'
-    print(f"模式: {mode}")
-
-    # Step 7: 生成 progress.json
-    print("生成进度文件...")
-    total_chars = sum(ch['length'] for ch in chapters)
-    progress = generate_progress(
-        book_sha,
-        metadata['title'],
-        metadata['author'],
-        mode,
-        chapters,
-        progress_path
-    )
-
-    # 如果是 library 模式，将书籍结构信息写入 progress.json
-    if mode == 'library' and book_structure and book_structure['type'] == 'multi_book':
-        books_info = []
-        for i, book in enumerate(book_structure['chapters']):
-            # multi_book 模式下，每个 book 对应一个 chapter（1:1 映射）
-            if i < len(chapters):
-                ch = chapters[i]
-                books_info.append({
-                    'index': i + 1,
-                    'title': book['name'],
-                    'chapters': [ch['index']],
-                    'total_chars': ch['length']
-                })
-            else:
-                books_info.append({
-                    'index': i + 1,
-                    'title': book['name'],
-                    'chapters': [],
-                    'total_chars': 0
-                })
-        progress['books'] = books_info
-        progress['current_book'] = 0
-        with open(progress_path, 'w', encoding='utf-8') as f:
-            json.dump(progress, f, ensure_ascii=False, indent=2)
-
-    print(f"进度文件: {progress_path}")
-
-    # Step 8: 创建 output 目录
-    output_dir = skill_dir / 'output' / book_sha
-    os.makedirs(output_dir, exist_ok=True)
-    print(f"输出目录: {output_dir}")
-
-    # Step 9: 创建 bookmark（会话持久化）
+def create_bookmark(sha, title, author, progress_path, bookmark_path):
+    """创建书签文件"""
     bookmark = {
-        'book_sha': book_sha,
-        'title': metadata['title'],
-        'author': metadata['author'],
+        'book_sha': sha,
+        'title': title,
+        'author': author,
         'progress_path': str(progress_path),
         'created_at': datetime.now().isoformat()
     }
     with open(bookmark_path, 'w', encoding='utf-8') as f:
         json.dump(bookmark, f, ensure_ascii=False, indent=2)
-    print(f"书签文件: {bookmark_path}")
+    return bookmark
+
+
+# ── CLI ──────────────────────────────────────────────────────
+
+def main():
+    if len(sys.argv) < 2:
+        print("用法:")
+        print("  python init_book.py <epub_path>              # 阶段一：快速初始化")
+        print("  python init_book.py <epub_path> --extract N   # 阶段二：提取第N本书")
+        sys.exit(1)
+
+    epub_path = sys.argv[1]
+
+    if not os.path.exists(epub_path):
+        print(f"错误: 文件不存在: {epub_path}")
+        sys.exit(1)
+
+    skill_dir = Path(__file__).parent.parent
+    state_dir = skill_dir / 'state'
+    chapters_dir = state_dir / 'chapters'
+
+    # ── 阶段二：按需提取 ──
+    if '--extract' in sys.argv:
+        idx = sys.argv.index('--extract')
+        if idx + 1 >= len(sys.argv):
+            print("错误: --extract 需要书的索引号")
+            sys.exit(1)
+
+        book_index = int(sys.argv[idx + 1])
+
+        # 快速初始化获取书籍信息
+        print(f"准备提取第 {book_index} 本书...")
+        init = quick_init(epub_path)
+
+        if book_index < 1 or book_index > len(init['books']):
+            print(f"错误: 索引超出范围 (1-{len(init['books'])})")
+            sys.exit(1)
+
+        book = init['books'][book_index - 1]
+        print(f"书名: {book['name']}")
+        print(f"提取文本...")
+
+        chapters = extract_book(init['extract_dir'], book, chapters_dir, book_index)
+        print(f"提取完成: {len(chapters)} 章")
+
+        # 更新 progress.json
+        progress_path = state_dir / f'{init["sha"]}-progress.json'
+        if progress_path.exists():
+            progress = json.load(open(progress_path, encoding='utf-8'))
+        else:
+            progress = {}
+
+        # 模式诊断
+        ch_names = [c['name'] for c in chapters]
+        if len(init['books']) > 1:
+            mode = 'standard_chapter'  # 单本书在 library 内用 standard_chapter
+        else:
+            mode = diagnose_mode(len(chapters), ch_names)
+
+        progress.update({
+            'book_sha': init['sha'],
+            'title': book['name'],
+            'author': init['author'],
+            'mode': mode,
+            'total_chapters': len(chapters),
+            'current_chapter': 0,
+            'chapters': [
+                {
+                    'index': ch['index'],
+                    'name': ch['name'],
+                    'file': ch['file'],
+                    'length': ch['length'],
+                    'status': 'pending'
+                }
+                for ch in chapters
+            ],
+            'characters': [],
+            'used_thematic_probes': 0,
+            'consecutive_transitional': 0,
+            'reader_signals': progress.get('reader_signals', [])
+        })
+
+        with open(progress_path, 'w', encoding='utf-8') as f:
+            json.dump(progress, f, ensure_ascii=False, indent=2)
+
+        total_chars = sum(c['length'] for c in chapters)
+        print(f"总字数: {total_chars:,}")
+        print(f"模式: {mode}")
+        print(f"进度文件: {progress_path}")
+
+        # 输出 JSON 供 Claude 读取
+        result = {
+            'status': 'ok',
+            'book_name': book['name'],
+            'chapters': len(chapters),
+            'total_chars': total_chars,
+            'mode': mode
+        }
+        print(f"\n{json.dumps(result, ensure_ascii=False)}")
+        return
+
+    # ── 阶段一：快速初始化 ──
+    print(f"正在初始化: {epub_path}")
+
+    # 检查已有书签
+    sha = calculate_sha256(epub_path)
+    bookmark_path = state_dir / f'{sha}-bookmark.json'
+
+    print("计算 SHA256...")
+    print(f"SHA256: {sha}")
+
+    print("解压 EPUB...")
+    init = quick_init(epub_path)
+    print(f"解压完成: {init['extract_dir']}")
+
+    print(f"书名: {init['title']}")
+    print(f"作者: {init['author']}")
+
+    print(f"解析目录结构...")
+    print(f"书籍数: {len(init['books'])}")
+
+    # 创建目录
+    os.makedirs(state_dir, exist_ok=True)
+    os.makedirs(chapters_dir, exist_ok=True)
+    output_dir = skill_dir / 'output' / sha
+    os.makedirs(output_dir, exist_ok=True)
+
+    # 判断模式
+    if len(init['books']) > 1:
+        mode = 'library'
+        # 多书模式：生成 books 元数据
+        books_meta = []
+        for i, book in enumerate(init['books']):
+            books_meta.append({
+                'index': i + 1,
+                'title': book['name'],
+                'type': book.get('type', 'unknown'),
+                'chapters_count': len(book.get('chapters', [])),
+                'estimated_chars': book.get('estimated_chars', 0)
+            })
+    else:
+        mode = 'standard_chapter'
+        books_meta = None
+
+    # 生成空 progress.json（只有书籍元数据，无文本）
+    progress_path = state_dir / f'{sha}-progress.json'
+    progress = {
+        'book_sha': sha,
+        'title': init['title'],
+        'author': init['author'],
+        'mode': mode,
+        'total_chapters': 0,
+        'current_chapter': 0,
+        'chapters': [],
+        'characters': [],
+        'used_thematic_probes': 0,
+        'consecutive_transitional': 0,
+        'created_at': datetime.now().isoformat(),
+        'reader_signals': []
+    }
+    if books_meta:
+        progress['books'] = books_meta
+        progress['current_book'] = 0
+
+    with open(progress_path, 'w', encoding='utf-8') as f:
+        json.dump(progress, f, ensure_ascii=False, indent=2)
+
+    # 创建书签
+    create_bookmark(sha, init['title'], init['author'], progress_path, bookmark_path)
 
     # 完成
+    print(f"模式: {mode}")
+    print(f"进度文件: {progress_path}")
+    print(f"书签文件: {bookmark_path}")
+
     print("\n" + "=" * 50)
     print("[OK] 初始化完成!")
-    print(f"书名: {metadata['title']}")
-    print(f"作者: {metadata['author']}")
-    print(f"章节数: {len(chapters)}")
-    print(f"总字数: {total_chars:,} 字")
+    print(f"书名: {init['title']}")
+    print(f"作者: {init['author']}")
+    print(f"书籍数: {len(init['books'])}")
     print(f"模式: {mode}")
-    print(f"SHA256: {book_sha}")
+    print(f"SHA256: {sha}")
     print("=" * 50)
-    print(f"\n已加载《{metadata['title']}》，共 {len(chapters)} 章/部。准备好了就开始第一章？")
+
+    # 输出 JSON 供 Claude 读取
+    result = {
+        'status': 'ok',
+        'title': init['title'],
+        'author': init['author'],
+        'mode': mode,
+        'books_count': len(init['books']),
+        'books': books_meta
+    }
+    print(f"\n{json.dumps(result, ensure_ascii=False)}")
 
 
 if __name__ == '__main__':
