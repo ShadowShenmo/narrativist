@@ -188,15 +188,75 @@ def parse_toc_ncx(extract_dir):
 
 
 def detect_book_structure(toc_entries, spine_items):
-    """根据目录结构检测书籍类型和章节组织"""
+    """根据目录结构检测书籍类型和章节组织
+
+    支持两种 TOC 结构：
+    1. 单书多章：L0 为章节（"第一部""第二部"等）
+    2. 多书合集：L0 为书名，L1 为各书的章节
+    """
     if not toc_entries:
-        # 没有目录信息，使用 spine 顺序
         return {
             'type': 'sequential',
             'chapters': [{'name': f'Chapter {i+1}', 'files': [item['href']]} for i, item in enumerate(spine_items)]
         }
 
-    # 分析目录结构
+    # 检查是否有 L1+ 条目（多层结构）
+    has_children = any(e.get('level', 0) > 0 for e in toc_entries)
+
+    if has_children:
+        # 多层 TOC：L0 为书/部，L1 为章节
+        # 构建层级结构
+        books = []
+        current_book = None
+
+        for entry in toc_entries:
+            level = entry.get('level', 0)
+            title = entry['title']
+            src = entry['src'].split('#')[0]
+
+            # 跳过扉页、版权页、目录、封底等非内容页
+            skip_titles = ['扉页', '版权页', '目录', '封底', '理想国·imaginist',
+                           '附录', '译名表', '致谢', '注解与参考文献',
+                           'title page', 'copyright', 'table of contents']
+            if any(st in title for st in skip_titles):
+                continue
+
+            if level == 0:
+                # 新的书/部
+                if current_book:
+                    books.append(current_book)
+                current_book = {
+                    'name': title,
+                    'files': [src]
+                }
+            elif level >= 1 and current_book:
+                # 属于当前书/部的章节
+                if src not in current_book['files']:
+                    current_book['files'].append(src)
+
+        if current_book:
+            books.append(current_book)
+
+        if books:
+            # 为每本书收集所有相关的 spine 文件
+            for book in books:
+                base_files = book['files'].copy()
+                all_files = []
+                for base_file in base_files:
+                    file_prefix = base_file.split('_')[0] if '_' in base_file else base_file.replace('.html', '').replace('.xhtml', '')
+                    for spine_item in spine_items:
+                        spine_href = spine_item['href']
+                        if spine_href.startswith(file_prefix):
+                            if spine_href not in all_files:
+                                all_files.append(spine_href)
+                book['files'] = all_files if all_files else base_files
+
+            return {
+                'type': 'multi_book',
+                'chapters': books
+            }
+
+    # 单层 TOC 或无子条目：检测是否为"部"结构
     parts = []
     current_part = None
 
@@ -204,7 +264,12 @@ def detect_book_structure(toc_entries, spine_items):
         title = entry['title']
         src = entry['src']
 
-        # 检测是否为"部"或"Part"
+        # 跳过非内容页
+        skip_titles = ['扉页', '版权页', '目录', '封底', '理想国·imaginist',
+                       '附录', '译名表', '致谢', '注解与参考文献']
+        if any(st in title for st in skip_titles):
+            continue
+
         is_part = any(keyword in title for keyword in ['第', '部', 'Part', 'part', '卷', 'Volume'])
 
         if is_part:
@@ -212,55 +277,47 @@ def detect_book_structure(toc_entries, spine_items):
                 parts.append(current_part)
             current_part = {
                 'name': title,
-                'files': [src.split('#')[0]]  # 移除锚点
+                'files': [src.split('#')[0]]
             }
         elif current_part:
-            # 当前条目属于上一个"部"
             file_name = src.split('#')[0]
             if file_name not in current_part['files']:
                 current_part['files'].append(file_name)
 
-    # 添加最后一个部
     if current_part:
         parts.append(current_part)
 
     if parts:
-        # 为每个部收集所有相关的 split 文件
         for part in parts:
             base_files = part['files'].copy()
             all_files = []
-
             for base_file in base_files:
-                # 获取文件名前缀（如 part0003）
-                file_prefix = base_file.split('_')[0] if '_' in base_file else base_file.replace('.html', '')
-
-                # 在 spine 中查找所有匹配的文件
+                file_prefix = base_file.split('_')[0] if '_' in base_file else base_file.replace('.html', '').replace('.xhtml', '')
                 for spine_item in spine_items:
                     spine_href = spine_item['href']
                     if spine_href.startswith(file_prefix):
                         if spine_href not in all_files:
                             all_files.append(spine_href)
-
             part['files'] = all_files if all_files else base_files
 
         return {
             'type': 'structured',
             'chapters': parts
         }
-    else:
-        # 没有检测到"部"结构，使用目录条目作为章节
-        return {
-            'type': 'toc_based',
-            'chapters': [{'name': entry['title'], 'files': [entry['src'].split('#')[0]]} for entry in toc_entries]
-        }
+
+    # 回退：使用目录条目作为章节
+    return {
+        'type': 'toc_based',
+        'chapters': [{'name': entry['title'], 'files': [entry['src'].split('#')[0]]} for entry in toc_entries]
+    }
 
 
 def extract_chapters(extract_dir, spine_items, chapters_dir, book_structure=None):
     """提取章节纯文本"""
     os.makedirs(chapters_dir, exist_ok=True)
 
-    # 如果有书籍结构信息，按结构提取
-    if book_structure and book_structure['type'] == 'structured':
+    # 如果有书籍结构信息，按结构提取（structured 和 multi_book 逻辑相同）
+    if book_structure and book_structure['type'] in ('structured', 'multi_book'):
         chapters = []
         for i, part in enumerate(book_structure['chapters']):
             all_text = []
@@ -516,6 +573,9 @@ def main():
     # Step 6: 模式诊断
     print("模式诊断...")
     mode = diagnose_mode(chapters)
+    # 如果 TOC 结构为多书合集，强制使用 library 模式
+    if book_structure and book_structure['type'] == 'multi_book':
+        mode = 'library'
     print(f"模式: {mode}")
 
     # Step 7: 生成 progress.json
@@ -529,6 +589,32 @@ def main():
         chapters,
         progress_path
     )
+
+    # 如果是 library 模式，将书籍结构信息写入 progress.json
+    if mode == 'library' and book_structure and book_structure['type'] == 'multi_book':
+        books_info = []
+        for i, book in enumerate(book_structure['chapters']):
+            # multi_book 模式下，每个 book 对应一个 chapter（1:1 映射）
+            if i < len(chapters):
+                ch = chapters[i]
+                books_info.append({
+                    'index': i + 1,
+                    'title': book['name'],
+                    'chapters': [ch['index']],
+                    'total_chars': ch['length']
+                })
+            else:
+                books_info.append({
+                    'index': i + 1,
+                    'title': book['name'],
+                    'chapters': [],
+                    'total_chars': 0
+                })
+        progress['books'] = books_info
+        progress['current_book'] = 0
+        with open(progress_path, 'w', encoding='utf-8') as f:
+            json.dump(progress, f, ensure_ascii=False, indent=2)
+
     print(f"进度文件: {progress_path}")
 
     # Step 8: 创建 output 目录
