@@ -10,8 +10,9 @@ Narrativist Skill - 跨平台书籍初始化脚本
 2. 解压 EPUB
 3. 解析元数据
 4. 提取章节文本
-5. 模式诊断
-6. 生成 progress.json
+5. 模式诊断（standard_chapter / grouped_epic / anthology / short / library）
+6. 生成 progress.json（含 characters、relationships 等完整字段）
+7. 创建输出目录
 """
 
 import sys
@@ -358,24 +359,59 @@ def extract_chapters(extract_dir, spine_items, chapters_dir, book_structure=None
 
 
 def diagnose_mode(chapters):
-    """三阶段智能诊断"""
-    # 阶段 A：TOC 层级信号
-    if len(chapters) > 20:
-        mode = 'grouped_epic'
-    elif len(chapters) <= 5:
-        mode = 'standard_chapter'
-    else:
-        mode = 'standard_chapter'
+    """三阶段智能诊断
 
-    # 阶段 B & C：内容分析（简化版）
-    # 实际实现需要更复杂的人物重叠度分析
-    # 这里暂时使用章节数作为主要判断依据
+    阶段 A：TOC 层级信号 — 基于章节数和结构类型
+    阶段 B：内容特征 — 检测章节标题中的关键词
+    阶段 C：综合判定 — 返回最终模式
+    """
+    num_chapters = len(chapters)
+    chapter_names = [ch['name'].lower() for ch in chapters]
 
-    return mode
+    # 阶段 A：章节数信号
+    if num_chapters == 0:
+        return 'short'
+
+    if num_chapters == 1:
+        # 单章/单篇 — 可能是短篇或短文
+        return 'short'
+
+    # 阶段 B：内容特征分析
+    # 检测是否为合集类（标题含"篇""故事""短篇"等）
+    anthology_keywords = ['篇', '故事', '短篇', '小说', 'tale', 'story', 'stories']
+    has_anthology_signal = any(
+        any(kw in name for kw in anthology_keywords)
+        for name in chapter_names
+    )
+
+    # 检测是否为嵌套结构（标题含"卷""册""书"等）
+    library_keywords = ['卷', '册', '书', '集', 'volume', 'book']
+    has_library_signal = any(
+        any(kw in name for kw in library_keywords)
+        for name in chapter_names
+    )
+
+    # 检测是否为史诗级长篇（章节间人物高度重叠，标题多为地名人名）
+    # 简化判断：章节数 > 20 或章节数 > 10 且无合集信号
+    is_long_narrative = num_chapters > 20 or (num_chapters > 10 and not has_anthology_signal)
+
+    # 阶段 C：综合判定
+    if has_library_signal and num_chapters >= 3:
+        return 'library'
+
+    if has_anthology_signal and num_chapters >= 3:
+        return 'anthology'
+
+    if is_long_narrative:
+        return 'grouped_epic'
+
+    # 默认：标准章节模式
+    return 'standard_chapter'
 
 
 def generate_progress(book_sha, title, author, mode, chapters, output_path):
     """生成 progress.json"""
+    total_chars = sum(ch['length'] for ch in chapters)
     progress = {
         'book_sha': book_sha,
         'title': title,
@@ -393,9 +429,11 @@ def generate_progress(book_sha, title, author, mode, chapters, output_path):
             }
             for ch in chapters
         ],
+        'characters': [],
+        'used_thematic_probes': 0,
+        'consecutive_transitional': 0,
         'created_at': datetime.now().isoformat(),
-        'reader_signals': {},
-        'reading_schedule': {}
+        'reader_signals': []
     }
 
     with open(output_path, 'w', encoding='utf-8') as f:
@@ -482,6 +520,7 @@ def main():
 
     # Step 7: 生成 progress.json
     print("生成进度文件...")
+    total_chars = sum(ch['length'] for ch in chapters)
     progress = generate_progress(
         book_sha,
         metadata['title'],
@@ -492,10 +531,22 @@ def main():
     )
     print(f"进度文件: {progress_path}")
 
-    # Step 7: 创建 output 目录
+    # Step 8: 创建 output 目录
     output_dir = skill_dir / 'output' / book_sha
     os.makedirs(output_dir, exist_ok=True)
     print(f"输出目录: {output_dir}")
+
+    # Step 9: 创建 bookmark（会话持久化）
+    bookmark = {
+        'book_sha': book_sha,
+        'title': metadata['title'],
+        'author': metadata['author'],
+        'progress_path': str(progress_path),
+        'created_at': datetime.now().isoformat()
+    }
+    with open(bookmark_path, 'w', encoding='utf-8') as f:
+        json.dump(bookmark, f, ensure_ascii=False, indent=2)
+    print(f"书签文件: {bookmark_path}")
 
     # 完成
     print("\n" + "=" * 50)
@@ -503,6 +554,7 @@ def main():
     print(f"书名: {metadata['title']}")
     print(f"作者: {metadata['author']}")
     print(f"章节数: {len(chapters)}")
+    print(f"总字数: {total_chars:,} 字")
     print(f"模式: {mode}")
     print(f"SHA256: {book_sha}")
     print("=" * 50)

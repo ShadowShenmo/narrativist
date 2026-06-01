@@ -4,18 +4,29 @@
 
 适用：TOC 扁平、章节 ≤20、连续叙事。
 
+**执行原则**：以下每一步都是**必选**。除非明确标注"可跳过"，否则不得省略。
+
+---
+
 For each chapter (N from 1 to total_chapters):
 
-## Step 1: Show Character Snapshot
+## Step 1: 读前准备
 
-Read `references/character-snapshot.md` for format. Output current character table
-from progress.json. If empty, skip this step for chapter 1.
+### 1a. 进度条（开始时）
 
-## Step 2: Pre-Reading Hook & Choose Question Template
+进度条格式 → 详见 `references/component-progress-bar.md`（Standard Chapter Mode）
 
-进度条格式 → 详见 `references/component-progress-bar.md`（Standard Chapter Mode 开始时）
+格式：`[{第N部名} {进度条}] {N}/{total} 部`
 
-输出读前提示（叙事焦点 + 意象预告）：
+### 1b. 人物快照
+
+从 progress.json.characters 读取当前人物表。如果为空（第 1 章），跳过。
+
+格式 → 详见 `references/character-snapshot.md`
+
+### 1c. 读前提示
+
+输出以下格式的读前 hook（**必选，不得省略**）：
 
 ```
 读前：
@@ -24,107 +35,147 @@ from progress.json. If empty, skip this step for chapter 1.
 主要意象：{本章出现的核心意象，如该章有}
 ```
 
-Read the chapter text from `state/{book_slug}_chapters/ch{N}.txt`.
-Analyze briefly, then match against the templates in `references/guide-questions.md`.
+- 类型声明：基于全书判断（如"现代主义·意识流""现实主义·社会小说"）
+- 难度：★ 到 ★★★★★
+- 叙事焦点：本章最值得关注的叙事特征
+- 主要意象：本章出现的核心意象（可选，无则省略此行）
 
-问题层级策略 → 详见 `references/guide-questions.md`（引导问题生成策略）。按 L1→L2→L3 轮换选取，首章从 L1 开始。
+### 1d. 读取章节文本
 
-Template selection logic (in priority order):
-1. **New character appears OR known character does something反常** → Template 1 (Character Lens)
-2. **Environmental/sensory description dominates (>40% of content)** → Template 2 (Atmosphere Engine)
-3. **Clear plot pivot (perspective shift, time jump, major event)** → Template 3 (Structure Node)
-4. **Chapter exposes a core theme** → Template 4 (Thematic Probe) — max 2 uses per book
-5. **None of the above** → Template 5 (Transitional Chapter) — max 2 consecutive, force upgrade on 3rd
-6. **Strong sensory descriptions ≥3** → Template 6 (感官暗桩)
-7. **Notable narrative voice features (unreliable narrator, focalization shift)** → Template 8 (叙事声音)
-8. **Non-linear time, scene/summary alternation** → Template 9 (时间结构)
-9. **Free indirect discourse or stream of consciousness** → Template 10 (自由间接引语)
-10. **Recurring imagery/motif across chapters** → Template 11 (意象系统)
-11. **Space carries symbolic weight** → Template 12 (空间诗学)
+从 `state/chapters/{chapters[N-1].file}` 读取章节纯文本。
+注意：文件名从 progress.json 的 chapters 数组中获取（如 part1.txt, ch01.txt）。
 
-**信号偏置（Signal Bias）**：在模板选择时，检查 progress.json 的 reader_signals：
-- 如果 reader_signals 非空，参考历史信号偏置模板选择：
-  - 最近信号为 emotional_resonance → 优先 Template 1（人物透镜）
-  - 最近信号为 sensory_sensitivity → 优先 Template 2（氛围引擎）或 Template 6（感官暗桩）
-  - 最近信号为 structural_interest → 优先 Template 3（结构节点）、Template 8（叙事声音）或 Template 9（时间结构）
-  - 最近信号为 character_focus → 优先 Template 1（人物透镜）
-- 参考信号偏置但不强制：如果章节内容明显更适合其他模板，仍以内容匹配为准
+## Step 2: 生成引导问题
 
-When generating the question, follow the format in `references/guide-questions.md`:
-- **关键词**：{1-2 evocative words}
-- **引导问题**：{the question, phrased conversationally, not like an exam}
-- Never mention "模板1" or "Template" — just output the keywords and question naturally.
+### 2a. 模板选择
 
-Do NOT include the reference answer yet. That comes after user responds.
+分析章节文本，按以下优先级选择模板（→ 详见 `references/guide-questions.md`）：
 
-After outputting the keywords and question, always append this invitation as part of the user-facing output:
-> "读到想聊的地方，随时发一句「这里」加你的想法，我会接住。"
+1. 新角色出场或已有角色反常行为 → Template 1（人物透镜）
+2. 环境/感官描写 >40% → Template 2（氛围引擎）
+3. 明确叙事转折 → Template 3（结构节点）
+4. 暴露核心主题 → Template 4（主题探针）— 全书最多 2 次
+5. 以上皆非 → Template 5（平常章）— 最多连续 2 次
+6. 强感官描写 ≥3 处 → Template 6（感官暗桩）
+7. 叙事声音值得关注 → Template 8（叙事声音）
+8. 非线性时间 → Template 9（时间结构）
+9. 自由间接引语/意识流 → Template 10（自由间接引语）
+10. 重复意象/母题 → Template 11（意象系统）
+11. 空间承载象征意义 → Template 12（空间诗学）
 
-## Step 3: Wait for User
+**层级轮换**：首章 L1，然后 L2→L3→L1 循环。检查 progress.json.used_thematic_probes 和 consecutive_transitional 约束。
 
-User reads the chapter, then either:
-- Answers the question in their own words
-- Says "看答案" / "直接看答案" / "跳过" to skip
+**信号偏置**：如果 progress.json.reader_signals 非空，参考最近信号偏置模板选择（但不强制）。
 
-## Step 4: Show Reference Answer
+### 2b. 输出引导问题（必选）
 
-参考回答采用三段式（→ 详见 `references/guide-questions.md` 各模板 AI 参考）：
+按 `references/guide-questions.md` 中对应模板的格式输出：
+
+> **关键词**：{1-2 个意象词}
+>
+> **引导问题**：{口语化的问题，不要像考试题}
+
+### 2c. 输出邀请语（必选，紧跟引导问题之后）
+
+> 读到想聊的地方，随时发一句「这里」加你的想法，我会接住。
+
+## Step 3: 等待用户
+
+用户读完章节后，会：
+- 用自己的话回答引导问题
+- 说"看答案"/"直接看答案"/"跳过" 来跳过
+- 发"这里"加想法来讨论某个片段
+
+## Step 4: 展示参考回答
+
+### 4a. 三段式参考回答（必选）
 
 ```
 > 证据：{从本章原文中提取1句关键引文}
 > 分析：{基于该证据的分析，100-150字}
-> 延伸：{结合外部知识注入的背景，1句延伸}
+> 延伸：{结合外部知识的1句延伸}
 ```
 
-**读后一问**（可跳过）：每章结束后生成 1 个开放式回顾问题。角度轮流切换：人物印象反转 / 最出乎意料的情节 / 哪段描写让你停下来 / 如果换一个视角来写会怎样 / 这一章的高潮真的是你以为的那个吗。不追问，不评价。格式极简，一行。
+### 4b. 读后一问（必选）
 
-> 读后一问（可跳过）：{基于本章内容生成的问题}
+生成 1 个开放式回顾问题（可跳过但必须输出）。角度轮流切换：
+- 人物印象反转
+- 最出乎意料的情节
+- 哪段描写让你停下来
+- 如果换一个视角来写会怎样
+- 这一章的高潮真的是你以为的那个吗
 
-## 快速回顾测验
+格式：
+> 读后一问（可跳过）：{问题}
 
-每章结束后生成 2 道单选题（按 2:1:1 比例分配 A/B/C 类）。格式与规则 → 详见 `references/component-quiz.md`
+### 4c. 快速回顾测验（必选）
 
-**进度更新**：进度条格式 → 详见 `references/component-progress-bar.md`（Standard Chapter Mode 结束时）
+生成 2 道单选题。格式与规则 → 详见 `references/component-quiz.md`
 
-## Step 4.5: Extract Reader Signals
+```
+> 来两道快问快答（可跳过）：
+> 1. [细节/叙事/意象] {问题}
+>    A. ...  B. ...  C. ...  D. ...
+>    → 正确答案：__。说明：___
+> 2. ...
+```
 
-If the user provided a substantive answer (not just "看答案" / "跳过" / "直接看答案"):
-- Analyze the user's response to extract reading interest signals:
-  - User discusses emotions/resonance → signal_type: "emotional_resonance"
-  - User discusses structure/narrative technique → signal_type: "structural_interest"
-  - User discusses sensory details/atmosphere → signal_type: "sensory_sensitivity"
-  - User discusses character motivation/relationships → signal_type: "character_focus"
-- Append the signal to progress.json reader_signals array:
-  `{"chapter": N, "signal_type": "...", "detail": "简短描述用户关注点", "strength": "strong|moderate|weak"}`
-- Determine strength by the depth of the user's response: detailed analysis → strong, brief comment → moderate, vague acknowledgment → weak
-- If the user skipped (didn't provide any substantive answer), do NOT extract a signal
-- Signal extraction should be based on keywords and tone analysis of the user's response, not rigid pattern matching
+### 4d. 进度条（结束时）
 
-## Step 5: Update State
+格式：`[{第N部名} {进度条}] {N}/{total} 部`
 
-1. Scan for new characters. If found, add to progress.json characters array:
-   `{"name": "...", "label": "...", "one-liner": "...", "first_chapter": N}`
-2. Save chapter record to `output/{book_slug}/chapter-{N}.md`:
+（进度条绘制规则 → `references/component-progress-bar.md`）
+
+## Step 5: 更新状态
+
+以下更新全部**必选**，写入 progress.json：
+
+### 5a. 提取读者信号
+
+如果用户提供了实质性回答（非"跳过"）：
+- 分析用户回答，提取阅读兴趣信号
+- 追加到 progress.json.reader_signals 数组：
+  `{"chapter": N, "signal_type": "emotional_resonance|structural_interest|sensory_sensitivity|character_focus", "detail": "简短描述", "strength": "strong|moderate|weak"}`
+
+### 5b. 扫描新角色
+
+扫描章节文本，识别新出场角色。如有，追加到 progress.json.characters 数组：
+`{"name": "角色名", "label": "身份标签", "one-liner": "一句话特征", "first_chapter": N}`
+
+### 5c. 保存章节记录
+
+写入 `output/{book_sha}/chapter-{N}.md`，格式：
+
 ```markdown
-# 第{N}章
+# 第{N}章：{章节名}
 
 ## 引导角度
-{template name in Chinese}
+{模板中文名}
 
 ## 关键词
-{keywords}
+{关键词}
 
 ## 引导问题
-{question}
+{问题}
 
 ## 你的回答
-{user's answer or "（跳过）"}
+{用户回答，或"（跳过）"}
 
 ## AI 参考
-{证据 + 分析 + 延伸}
+> 证据：...
+> 分析：...
+> 延伸：...
 ```
-3. Update progress.json: increment current_chapter, update used_thematic_probes and consecutive_transitional counters.
 
-## Step 6: Next Chapter
+### 5d. 更新计数器
 
-Prompt: "下一章？" (Just this, nothing else. Let the user drive the pace.)
+- `current_chapter` → N
+- `chapters[N-1].status` → "completed"
+- 如果使用了 Template 4：`used_thematic_probes` += 1
+- 如果使用了 Template 5：`consecutive_transitional` += 1，否则重置为 0
+
+## Step 6: 下一章
+
+输出：下一章？
+
+（仅此一句，不追问，让用户控制节奏。）

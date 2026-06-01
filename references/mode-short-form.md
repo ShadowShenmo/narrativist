@@ -1,13 +1,33 @@
 # Short-form Mode
 
-> 用途：短篇模式 — 无清晰章节结构的小说全篇一次引导 | 被引用：SKILL.md 路由表
+> 用途：短篇/中篇模式 — 无清晰章节结构或单章文本，全篇一次性引导 | 被引用：SKILL.md 路由表
 
-For novels without clear chapter structure:
+适用：单独短篇、中篇小说、或 EPUB 只有 1 章的连续叙事。
 
-1. 问题层级策略：首问 L1（情节锚点），次问 L3（深层结构）。→ 详见 `references/guide-questions.md`（引导问题生成策略）
-2. Read the full text. Generate exactly 2 questions:
-   - **Question 1 (surface)**: Template 1 or 2 — focus on a specific character or atmosphere
-   - **Question 2 (deep)**: Template 4 Thematic Probe — give a pair of contradictory concepts
-3. Output both questions at once. User reads, then responds to both (or skips).
-4. Show both reference answers（三段式：证据 + 分析 + 延伸，→ 详见 `references/guide-questions.md`）。
-5. Proceed to Final Summary.
+## 问题数量
+
+根据文本长度分级：
+
+| 文本长度 | 问题数 | 说明 |
+|---------|--------|------|
+| < 1 万字 | 2 | 短篇标准 |
+| 1-3 万字 | 3 | 加一个结构/意象问题 |
+| 3-6 万字 | 4 | 覆盖人物、氛围、结构、主题 |
+| > 6 万字 | 5 | 全面覆盖 |
+
+## 流程
+
+1. **读取全文**：从 `state/chapters/{file}` 读取完整文本
+2. **确定问题数**：根据文本长度查上表
+3. **生成引导问题**：
+   - 第 1 问（L1 情节锚点）：Template 1 或 2 — 聚焦角色或氛围
+   - 第 2 问（L3 深层结构）：Template 4 主题探针 — 一对矛盾概念
+   - 第 3 问起（如有）：从 L2 叙事技巧中选 — Template 8/9/10，按内容匹配
+   - 问题层级策略 → 详见 `references/guide-questions.md`
+4. **一次性输出所有问题**（不逐个等待）
+5. **等待用户**：用户读完后回答所有问题（或跳过）
+6. **展示参考回答**：每个问题按三段式（证据 + 分析 + 延伸）
+7. **读后一问**（可跳过）：1 个开放式回顾
+8. **测验**：2 道单选题（→ `references/component-quiz.md`）
+9. **扫描人物**：从全文提取角色，添加到 progress.json
+10. **进入 Final Summary**
