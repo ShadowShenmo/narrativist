@@ -36,18 +36,46 @@ git clone https://github.com/ShadowShenmo/narrativist.git ~/.agents/skills/narra
 
 ### Use
 
-Drop an EPUB into Claude Code and say:
+#### Quick Start (Recommended)
 
-> "用 narrativist 读这本书"
+1. **Ensure Python is installed** (3.8+)
+   - Mac: `brew install python3` or download from python.org
+   - Linux: `sudo apt-get install python3`
+   - Windows: Download from https://www.python.org/downloads/, check "Add Python to PATH"
+
+2. **One-click initialization**
+
+   ```bash
+   cd ~/.claude/skills/narrativist
+   python scripts/init_book.py "path/to/your/book.epub"
+   ```
+
+3. **Start reading**
+
+   Drop an EPUB into Claude Code and say:
+
+   > "用 narrativist 读这本书"
+
+#### Interactive Use
 
 That's it. The engine diagnoses the book's structure, injects literary context, shows you the cast and a progress bar, then serves one guiding question per chapter — always with a skip option.
+
+#### Cross-Platform Support
+
+This skill supports Mac, Linux, and Windows (Git Bash):
+- ✅ Mac / Linux: Native support
+- ✅ Windows: Optimized for Git Bash with path and encoding compatibility
+- ✅ All file operations use Python to avoid platform differences
 
 ### Architecture
 
 ```
 narrativist/
 ├── SKILL.md                         # Index & router (133 lines)
+├── README.md                        # This file
 ├── .claude-plugin/plugin.json       # Marketplace manifest
+├── scripts/
+│   └── init_book.py                 # Cross-platform initialization script
 ├── references/
 │   ├── guide-questions.md           # 12 templates + L1/L2/L3 strategy
 │   ├── mode-standard-chapter.md     # ≤20 chapters, flat TOC
@@ -96,18 +124,46 @@ git clone https://github.com/ShadowShenmo/narrativist.git ~/.agents/skills/narra
 
 ### 使用
 
-把 EPUB 拖进 Claude Code，说：
+#### 快速开始（推荐）
 
-> "用 narrativist 读这本书"
+1. **确保 Python 已安装**（3.8+）
+   - Mac: `brew install python3` 或从 python.org 下载
+   - Linux: `sudo apt-get install python3`
+   - Windows: 从 https://www.python.org/downloads/ 下载，勾选 "Add Python to PATH"
+
+2. **一键初始化**
+
+   ```bash
+   cd ~/.claude/skills/narrativist
+   python scripts/init_book.py "path/to/your/book.epub"
+   ```
+
+3. **开始阅读**
+
+   把 EPUB 拖进 Claude Code，说：
+
+   > "用 narrativist 读这本书"
+
+#### 交互式使用
 
 引擎会自动诊断书的结构、注入文学背景、展示人物表和进度条，然后每章一个引导问题——永远可以跳过。
+
+#### 跨平台支持
+
+本 skill 支持 Mac、Linux、Windows（Git Bash）三种平台：
+- ✅ Mac / Linux：原生支持
+- ✅ Windows：通过 Git Bash 运行，已优化路径和编码兼容性
+- ✅ 所有文件操作统一使用 Python，避免平台差异
 
 ### 架构
 
 ```
 narrativist/
 ├── SKILL.md                         # 索引总纲（133行）
+├── README.md                        # 本文档
 ├── .claude-plugin/plugin.json       # 市场元数据
+├── scripts/
+│   └── init_book.py                 # 跨平台初始化脚本
 ├── references/
 │   ├── guide-questions.md           # 12类模板 + L1/L2/L3策略
 │   ├── mode-standard-chapter.md     # 标准章节（≤20章）
