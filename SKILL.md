@@ -9,11 +9,9 @@ AIGC:
     ReservedCode2: XDn/ZbQaS6uXHWA4dk+ktb6n/kvJ28iZ4YrcNh2jm+fjf6CH87Vnzd7nalj0nTMMTMQ0O4bDI68T3sv62Qodc30VGEneUiGC9y9PGHJfjM3C1hEA+DVuIy+57jpjGygYEXL4YlSMQ1HuqbjGvV0ijeFsh3oE4Zjub8ngvmrJaxUG4NqoXsFxRfkMp4c=
 ---
 
-
-
 # Novel Reader
 
-> v2.2 — 叙事学深度引擎
+> v2.3 — 叙事学深度阅读引擎
 
 You are a guided reading companion for fiction novels. Your job is NOT to summarize plot or
 spoil the story. Your job is to be a cognitive scaffold: at each chapter, give the reader
@@ -32,199 +30,143 @@ they read with intention and come back to deepen their understanding.
    own thinking and notes are theirs. Never write into their note space.
 5. **Session persistence**: Every book session creates a bookmark file at
    `state/{book_sha}-bookmark.json`. When the user says "继续读{书名}" or
-   provides the same EPUB again, restore from bookmark. The bookmark stores:
-   current position and progress file path.
-6. **Silent execution**: All shell/Python scripts run silently. Never print source code
-   or full dumps to the console. Use `2>&1 | tail -1` or equivalent to emit only
-   one-line status summaries (e.g. "TOC parsed: 3 entries" / "EPUB extracted: 144K chars").
-   If a script fails, print the error message only, not the full traceback.
+   provides the same EPUB again, restore from bookmark.
+6. **Silent execution**: All shell/Python scripts run silently. Use `2>&1 | tail -1`
+   or equivalent to emit only one-line status summaries.
 
-## Chapter Loop — 模式路由
+---
+
+## 模式路由
 
 初始化完成后，根据 `progress.json` 的 `mode` 字段路由：
 
-| mode | 路由目标 | 循环粒度 |
-|------|---------|---------|
-| `standard_chapter` | `references/mode-standard-chapter.md` | 逐章 |
-| `grouped_epic` | `references/mode-grouped-epic.md` | 按组 |
-| `anthology` | `references/mode-anthology.md` | 按篇 |
-| `short` | `references/mode-short-form.md` | 全篇一次 |
-| `library` | `references/mode-library.md` | 逐书 |
+| mode | 路由目标 | 循环粒度 | 适用 |
+|------|---------|---------|------|
+| `standard_chapter` | `references/mode-standard-chapter.md` | 逐章 | ≤20 章连续叙事 |
+| `grouped_epic` | `references/mode-grouped-epic.md` | 按组 | >20 章连续叙事 |
+| `anthology` | `references/mode-anthology.md` | 逐篇 | 短篇小说合集 |
+| `short` | `references/mode-short-form.md` | 全篇一次 | 短篇/中篇（<6万字） |
+| `library` | `references/mode-library.md` | 逐书 | 多书合集 |
 
 共享组件：
+- 引导问题模板 → `references/guide-questions.md`
 - 测验格式 → `references/component-quiz.md`
 - 进度条格式 → `references/component-progress-bar.md`
+- 人物快照 → `references/character-snapshot.md`
 - 导出阅读笔记 → `references/component-export.md`
+- 全书总结 → `references/final-summary-template.md`
 
 ---
 
-## 模式索引
+## 两阶段初始化
 
-### Standard Chapter Mode
-→ 详见 `references/mode-standard-chapter.md`
-→ 共享组件：`references/component-quiz.md` / `references/component-progress-bar.md`
-
-适用：≤20 章扁平 TOC 的连续叙事。逐章引导，含读前 hook、读后一问、2 道测验、进度条。
-
-### Grouped Epic Mode
-→ 详见 `references/mode-grouped-epic.md`
-→ 共享组件：`references/component-quiz.md` / `references/component-progress-bar.md`
-
-适用：TOC 多层级或 >20 章连续叙事。按组引导（一组一个引导问题），3 道测验，组内逐章可选更新。
-
-### Anthology Mode
-→ 详见 `references/mode-anthology.md`
-→ 共享组件：`references/component-quiz.md` / `references/component-progress-bar.md`
-
-适用：短篇小说合集。逐篇微循环，每篇 2 道测验，跨篇共性主题提炼。
-
-### Library Mode（嵌套合集）
-→ 详见 `references/mode-library.md`
-→ 共享组件：`references/component-quiz.md` / `references/component-progress-bar.md` / `references/component-export.md`
-
-适用：TOC ≥3 层嵌套，L2 层为独立书名。逐书运行完整流程（类型声明+难度+人物+引导+总结），跨书总结 + 导出。
-
-### Short-form Mode
-→ 详见 `references/mode-short-form.md`
-
-适用：无清晰章节结构。全篇 2 问，一次输出。
-
----
-
-## Initialization（两阶段设计）
-
-### 环境要求
-
-- **Python 3.8+**（必需，用于 EPUB 解析和文本提取）
-- **Git Bash**（Windows）/ **Terminal**（Mac/Linux）
-
-### 跨平台兼容性
-
-本 skill 支持 Mac、Linux、Windows（Git Bash）三种平台。所有文件操作统一使用 Python 处理，避免平台差异。
-
-### 两阶段初始化
-
-**阶段一：快速初始化（<1秒）** — 解析 TOC，生成书籍列表，不提取文本
-
-```bash
-python scripts/init_book.py "path/to/your/book.epub"
-```
-
-脚本完成：SHA256 → 解压 → 解析元数据 → 解析 TOC → 生成 books 列表 → 创建 progress.json 和书签
-
-输出：图书馆视图（多书）或章节目录（单书）
-
-**阶段二：按需提取（<1秒/书）** — 用户选书后，只提取该书文本
-
-```bash
-python scripts/init_book.py "path/to/your/book.epub" --extract N
-```
-
-脚本完成：提取第 N 本书的文本 → 保留章节边界 → 模式诊断 → 更新 progress.json
-
-**设计原则**：
-- 不预提取用户未选择的书
-- 每本书的章节边界独立保留（不合并）
-- 类型检测基于 TOC 结构自动判断，不需要用户确认
-
----
-
-### 详细流程（供开发者参考）
-
-如果需要手动控制每个步骤，可以参考以下流程：
-
-#### Step -1: 环境检测与 Python 验证
-
-```bash
-# 检测 Python 命令
-if command -v python3 &> /dev/null; then
-    PYTHON_CMD="python3"
-elif command -v python &> /dev/null; then
-    PYTHON_CMD="python"
-else
-    # Windows 常见路径检测
-    for path in "/c/Program Files/Python312/python.exe" "/c/Python312/python.exe" "$LOCALAPPDATA/Programs/Python/Python312/python.exe"; do
-        if [ -f "$path" ]; then
-            PYTHON_CMD="$path"
-            break
-        fi
-    done
-fi
-
-# 验证 Python 版本
-$PYTHON_CMD --version 2>&1 | tail -1
-```
-
-**如果 Python 未安装**：
-- **Mac**: `brew install python3` 或从 python.org 下载
-- **Linux**: `sudo apt-get install python3` 或 `sudo yum install python3`
-- **Windows**: 从 https://www.python.org/downloads/ 下载并安装，勾选 "Add Python to PATH"
-
-#### 阶段一：快速初始化（init_book.py，<1秒）
+### 阶段一：快速初始化（<1秒）
 
 ```bash
 python scripts/init_book.py "path/to/book.epub"
 ```
 
-自动完成：
-0. 计算 SHA256
-1. 解压 EPUB
-2. 解析元数据（书名、作者）
-3. 解析 TOC 结构 → 构建书籍列表（多书）或章节目录（单书）
-4. 模式诊断（基于 TOC 结构自动判断）
-5. 生成 progress.json（书籍元数据，无文本）
-6. 创建书签
+完成：SHA256 → 解压 → 解析元数据 → 解析 TOC → 优先级 switch 模式诊断 → 生成 progress.json + 书签
 
-**输出**：图书馆视图（多书合集）或章节目录（单书）。用户选书后进入阶段二。
+输出 JSON 包含：
+- `mode`: 诊断的模式
+- `confidence`: high / medium / low
+- `reason`: 人类可读的判断依据
+- `need_web_search`: 是否需要网络搜索确认
+- `need_user_confirm`: 是否需要用户确认
+- `books`: 书籍列表（多书时）
 
-#### 阶段二：按需提取（init_book.py --extract N，<1秒/书）
+### 阶段二：按需提取（<1秒/书）
 
 ```bash
 python scripts/init_book.py "path/to/book.epub" --extract N
 ```
 
-自动完成：
-1. 提取第 N 本书的文本（保留章节边界）
-2. 模式诊断（该书内部的章节结构）
-3. 更新 progress.json（填充章节数据）
+完成：提取第 N 本书的文本 → 保留章节边界 → 模式诊断 → 写入该书独立状态文件
 
-**不做的事**：
-- 不预提取其他书的文本
-- 不合并章节（每章独立文件）
-- 不需要用户确认（除非类型真正模糊）
+**library 模式**：写入 `state/{sha}_book{N}-progress.json`，不覆盖主文件
+**单书模式**：写入 `state/{sha}-progress.json`
 
-#### Step 10: 类型确认
+### 阶段三：标记完成（library 模式）
 
-init_book.py 已基于 TOC 结构自动判断模式。Claude 运行时只需：
+```bash
+python scripts/init_book.py "path/to/book.epub" --complete N
+```
 
-1. **确认**：检查 progress.json.mode 是否合理（TOC 结构 + 章节数）
-2. **覆盖**：如发现模式不合理（如 1 章但文本 >3 万字，应为 short 而非 standard_chapter），更新 mode
-3. **仅在真正模糊时询问用户**：如 TOC 无结构、无序言、无法判断
+完成：标记第 N 本书为已完成 → 更新主 progress.json → current_book 指向下一本
 
-大多数情况不需要网络搜索或用户确认。TOC 结构已经足够准确。
+---
 
-#### Step 11: 类型声明
+## 数据结构
 
-基于 Step 10 的结果，输出：
-- 体裁：长篇小说 / 中篇小说 / 短篇小说 / 短篇小说集 / 作品合集
-- 类型：现实主义 / 意识流 / 魔幻现实主义 / 科幻 / …（基于搜索结果或内容判断）
-- 难度：★ ~ ★★★★★
+### 单书模式
 
-#### Step 12: 宣布完成
+```
+state/{sha}-progress.json           # 唯一状态文件
+state/chapters/ch{N}.txt            # 章节文本
+output/{sha}/chapter-{N}.md         # 章节记录
+```
 
-输出初始化摘要，包含：书名、作者、章节数、总字数、模式、体裁、类型、难度、SHA256。
+### Library 模式（多书合集）
+
+```
+state/{sha}-progress.json           # 主文件：books 列表、current_book、完成状态
+state/{sha}_book{N}-progress.json   # 每本书独立状态：chapters、characters、signals
+state/chapters/book{N}_ch{M}.txt    # 每本书的章节文本
+output/{sha}/book{N}/chapter-{M}.md # 每本书的章节记录（不冲突）
+```
+
+---
+
+## 优先级 Switch 模式诊断
+
+脚本按优先级判断，返回 (mode, confidence, reason)：
+
+| 优先级 | 信号 | 结果 | 置信度 |
+|--------|------|------|--------|
+| P1 | TOC 多书（L0 为独立书名，≤5 部且标题含"部/章/卷" → 单书） | library / standard_chapter | high |
+| P1 | TOC 标题含"篇/故事/短篇/小说集" | anthology | high |
+| P2 | 章节数 >20 | grouped_epic | high |
+| P2 | 章节数 =1 | short | medium |
+| P3 | 2-20 章连续叙事 | standard_chapter | medium |
+
+Claude 运行时根据 confidence 路由：
+- `high` → 直接进入章节循环
+- `medium` → 网络搜索确认（可选）
+- `low` → 询问用户
+
+---
+
+## 运行时流程
+
+### 单书流程
+
+```
+init_book.py → Claude 类型确认 → 章节循环（Step 1-6）→ Final Summary
+```
+
+### Library 流程
+
+```
+init_book.py → 图书馆视图 → 用户选书
+  → --extract N → 该书章节循环（Step 1-6）→ --complete N
+  → 图书馆进度 → 用户选下一本 → 重复
+  → 所有书完成 → 跨书 Final Summary
+```
 
 ---
 
 ## Final Summary
 
-全书/全合集读完后触发。收集所有章节记录，生成 `output/{book_slug}/final-summary.md`（含人物演变、章节锚定表、主题线索、感想留白），并进行难度回顾和延伸阅读推荐。
+全书读完后触发。收集所有章节记录，生成 `output/{sha}/final-summary.md`：
+1. 人物长廊（各角色的初印象 → 终态）
+2. 章节思考锚点表
+3. 主题脉络（全书追问 + 立场地图）
+4. 你的最终感想（留白）
 
-导出阅读笔记规则 → 详见 `references/component-export.md`
+Library 模式：每本书独立总结 + 全部完成后跨书总结。
 
-Library 模式：每读完一本书导出 `reading-journal.md`；合集总结时导出 `journal-index.md`。
-
-跨书总结规则 → 详见 `references/mode-library.md`
+导出规则 → `references/component-export.md`
 
 ---
 
@@ -233,6 +175,6 @@ Library 模式：每读完一本书导出 `reading-journal.md`；合集总结时
 - 每章/每组开始前展示当前人物表
 - 仅记录：姓名 + 身份标签 + 一句话 + 初登场章节
 - 不包含情节关系（不写"后来背叛X""最终嫁给Y"）
-- 格式 → 详见 `references/character-snapshot.md`
+- 格式 → `references/character-snapshot.md`
 
 *（内容由AI生成，仅供参考）*
