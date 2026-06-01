@@ -668,6 +668,52 @@ def diagnose(metadata, toc_entries, books_count, extract_dir=None, spine_items=N
     return 'standard_chapter', 'low', '无法自动判定', -1
 
 
+def extract_diagnostic_card(metadata, toc_entries, extract_dir, spine_items, books_count):
+    """提取诊断卡：极短摘要，供 AI 判断体裁
+
+    返回 dict（JSON 序列化后约 500-800 tokens）
+    """
+    card = {
+        'title': metadata.get('title', ''),
+        'author': metadata.get('author', ''),
+        'dc_type': metadata.get('dc_type', ''),
+        'dc_subjects': metadata.get('dc_subjects', []),
+        'dc_description': (metadata.get('dc_description', '') or '')[:200],
+        'spine_count': metadata.get('spine_count', 0),
+        'books_count': books_count,
+    }
+
+    # TOC 样本（前 20 个 L0 条目）
+    if toc_entries:
+        l0 = [e['title'] for e in toc_entries if e.get('level', 0) == 0][:20]
+        card['toc_sample'] = l0
+        card['toc_max_level'] = max((e.get('level', 0) for e in toc_entries), default=0)
+
+    # 正文采样：第一个内容文件的前 500 字 + 另一个文件的前 300 字
+    content_files = [s for s in spine_items if s['media_type'] == 'application/xhtml+xml']
+    samples = []
+    for idx in [0, len(content_files) // 2]:  # 第一个 + 中间一个
+        if idx < len(content_files):
+            basename = os.path.basename(content_files[idx]['href'])
+            for root, dirs, files in os.walk(extract_dir):
+                for f in files:
+                    if f == basename or content_files[idx]['href'].endswith(f):
+                        try:
+                            with open(os.path.join(root, f), 'r', encoding='utf-8') as fh:
+                                raw = fh.read(4000)
+                            parser = HTMLTextExtractor()
+                            parser.feed(raw)
+                            text = parser.get_text().strip()
+                            limit = 500 if idx == 0 else 300
+                            samples.append(text[:limit])
+                        except:
+                            pass
+                        break
+    card['text_samples'] = samples
+
+    return card
+
+
 def load_diagnosis_cache(sha, state_dir):
     """加载诊断缓存"""
     p = state_dir / f'{sha}-diagnosis.json'
@@ -1032,15 +1078,27 @@ def main():
     print(f"SHA256: {sha}")
     print("=" * 50)
 
-    # 输出 JSON 供 Claude 读取
+    # 提取诊断卡（供 AI 双维判断）
+    diag_card = extract_diagnostic_card(
+        init['metadata'], init['toc_entries'],
+        init['extract_dir'], init['spine_items'], books_count
+    )
+
+    # 输出 JSON 供 Claude 读取（规则引擎结果 + 诊断卡）
     result = {
         'status': 'ok',
         'title': init['title'],
         'author': init['author'],
-        'mode': mode,
-        'confidence': confidence,
-        'reason': reason,
-        'diagnosis_layer': layer,
+        # 规则引擎结果
+        'rule_engine': {
+            'mode': mode,
+            'confidence': confidence,
+            'reason': reason,
+            'layer': layer,
+        },
+        # 诊断卡（供 AI 判断）
+        'diagnostic_card': diag_card,
+        # 控制字段
         'need_user_confirm': should_ask_user(confidence),
         'books_count': len(init['books']),
         'books': books_meta

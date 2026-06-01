@@ -72,15 +72,26 @@ they read with intention and come back to deepen their understanding.
 python scripts/init_book.py "path/to/book.epub"
 ```
 
-完成：SHA256 → 解压 → 解析元数据 → 解析 TOC → 优先级 switch 模式诊断 → 生成 progress.json + 书签
+完成：SHA256 → 解压 → 解析元数据 → 解析 TOC → 规则引擎诊断 → 提取诊断卡 → 生成 progress.json + 书签
 
-输出 JSON 包含：
-- `mode`: 诊断的模式
-- `confidence`: high / medium / low
-- `reason`: 人类可读的判断依据
-- `need_web_search`: 是否需要网络搜索确认
-- `need_user_confirm`: 是否需要用户确认
-- `books`: 书籍列表（多书时）
+输出 JSON 包含两部分：
+- `rule_engine`: 规则引擎结果（mode, confidence, reason, layer）
+- `diagnostic_card`: 诊断卡（title, author, dc_type, dc_subjects, toc_sample, text_samples）
+
+### 双维命中诊断（Claude 运行时）
+
+init_book.py 输出后，Claude 同时看到两个信息源：
+
+1. **规则引擎结果**（`rule_engine`）：基于 OPF 元数据 + TOC 指纹 + 内容采样的规则判断
+2. **诊断卡**（`diagnostic_card`）：书名、作者、元数据、TOC 样本、正文片段
+
+Claude 从诊断卡中**独立判断**体裁，然后与规则引擎结果比对：
+
+- **双方一致** → 直接采纳，置信度提升为 `very_high`
+- **双方不一致** → Claude 用自己的判断，但标记为需要确认，在首条消息中告知用户
+- **规则引擎 low + Claude 也拿不准** → 询问用户（展示候选，5 秒超时自动按最可能选项）
+
+诊断结果缓存到 `state/{sha}-diagnosis.json`，下次直接复用（<1ms）。
 
 ### 阶段二：按需提取（<1秒/书）
 
