@@ -20,7 +20,9 @@ For each chapter (N from 1 to total_chapters):
 
 ### 1b. 人物快照
 
-从 progress.json.characters 读取当前人物表。如果为空（第 1 章），跳过。
+从 progress.json.characters 读取当前人物表并展示。
+
+**第 1 章特殊处理**：characters 为空时，先读取章节文本扫描主要人物（叙述者、核心家庭成员、关键配角），写入 progress.json.characters，再展示快照。不要跳过。
 
 格式 → 详见 `references/character-snapshot.md`
 
