@@ -178,6 +178,17 @@ For each chapter (N from 1 to total_chapters):
 
 ## Step 6: 下一章
 
-输出：下一章？
+检查 `current_chapter` vs `total_chapters`：
 
-（仅此一句，不追问，让用户控制节奏。）
+**如果 current_chapter < total_chapters**：
+- 输出：下一章？
+- （仅此一句，不追问，让用户控制节奏。）
+
+**如果 current_chapter == total_chapters（该书/该部完成）**：
+
+-单书模式：进入 Final Summary
+- library 模式：
+  1. 调用 `python init_book.py "book.epub" --complete N` 标记完成
+  2. 展示图书馆进度条
+  3. 输出：这本书读完了。下一本？
+  4. 用户选择后，调用 `--extract M` 提取下一本，重新进入 Step 1

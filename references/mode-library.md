@@ -1,63 +1,91 @@
 # Library Mode（嵌套合集）
 
-> 用途：图书馆模式 — 多层嵌套 TOC，L2 层为独立书名，逐书运行完整流程 | 被引用：SKILL.md 路由表
+> 用途：图书馆模式 — 多书合集，逐书运行完整流程 | 被引用：SKILL.md 路由表
 
-适用：TOC ≥3 层嵌套，L0/L1 为容器语义，L2 为独立书名层
-触发：阶段 A 语义识别
+适用：EPUB 包含多本独立作品（如"理想国精选集9册"）。TOC 结构通常为 L0=书名、L1=章节，或更深层嵌套。
 
-## 行为
+## 数据结构
 
-1. 解析 TOC 后生成 library_index.json：
+```
+state/{sha}-progress.json           # 主文件：books 列表、current_book、完成状态
+state/{sha}_book{N}-progress.json   # 每本书独立状态：chapters、characters、signals
+state/chapters/book{N}_ch{M}.txt    # 每本书的章节文本
+output/{sha}/book{N}/chapter-{M}.md # 每本书的章节记录（不冲突）
+```
+
+## 初始化（阶段一）
+
+```bash
+python init_book.py "book.epub"
+```
+
+生成主 progress.json：
 ```json
 {
-  "type": "library",
-  "volumes": [
-    {
-      "label": "第一辑",
-      "collections": [
-        {
-          "label": "司汤达集",
-          "books": [
-            {"title": "红与黑", "type": "grouped_epic", "groups": 2, "total_chapters": 76},
-            {"title": "羊脂球", "type": "anthology", "stories": 33}
-          ]
-        }
-      ]
-    }
-  ]
+  "mode": "library",
+  "books": [
+    {"index": 1, "title": "盲视", "type": "multi_chapter", "chapters_count": 6, "status": "pending"},
+    {"index": 2, "title": "海边的房间", "type": "multi_chapter", "chapters_count": 15, "status": "pending"}
+  ],
+  "current_book": 0
 }
 ```
 
-2. 初始化时展示图书馆视图（树形目录），每本书标注类型和体量
+## 图书馆视图
 
-3. 用户选择一本书 → 该书按自己的模式运行完整流程（类型声明+难度+人物+引导问题+总结+推荐），进入时展示进度：
+初始化完成后，展示所有书籍列表（含类型、字数），让用户选择。
 
-   进度条格式 → 详见 `references/component-progress-bar.md`（Library Mode）
+## 选书后（阶段二）
 
-4. 全书总结时，提炼跨书共性主题：
-   - 同一作家集内：该作家的风格统一特征
-   - 同一辑内：时代/流派的共同关切
-   - 整部合集：可选的"你已经读过的"进度总览
+```bash
+python init_book.py "book.epub" --extract N
+```
 
-5. 书签按单本书存储：每选一本书创建独立的 bookmark
+生成该书的独立状态文件 `{sha}_book{N}-progress.json`，不覆盖主文件。
 
-## 外部知识注入
+该书按 standard_chapter 模式运行完整章节循环。
 
-对 L2 层的每本书独立执行三层搜索（→ 详见 SKILL.md 步骤 6.5）。已搜索过的书缓存结果避免重复。
+## 书完成后
 
-## 导出
+```bash
+python init_book.py "book.epub" --complete N
+```
 
-Library 模式导出规则 → 详见 `references/component-export.md`
+标记该书为 completed，更新主 progress.json：
+```json
+{
+  "books": [{"index": 1, "title": "盲视", "status": "completed"}, ...],
+  "current_book": 1
+}
+```
+
+Claude 运行时展示图书馆进度，提示下一本。
+
+## 书间导航
+
+当一本书的所有章节完成后（current_chapter == total_chapters）：
+
+1. 调用 `--complete N` 标记完成
+2. 展示图书馆进度：`[精选集 ████████░░░░░░░░░░░░] 1/9 本`
+3. 提示："下一本？" 或展示剩余书单
+4. 用户选择后调用 `--extract M` 提取下一本
+5. 重复直到所有书完成
+
+## 最终总结
+
+所有书完成后，触发 Final Summary：
+- 汇总所有书的 chapter-{M}.md 记录
+- 跨书人物长廊（从各书的 characters 合并）
+- 跨书主题脉络
+- 阅读感想留白
 
 ## 跨书总结
 
-当用户在 Library 模式中读完一本书并完成该书的总结后：
-1. 展示图书馆进度："你已经读了 3/70 本"
+当用户读完一本书并完成总结后：
+1. 展示图书馆进度："你已经读了 3/9 本"
 2. 可选择进入跨书总结：
-   - 同一作家集内读完 ≥2 本 → 提炼作家风格共性
-   - 读完整个作家集 → 该作家的完整创作脉络
-   - 整部合集进度达 50%+ → 可选总览
+   - 同一作家读完 ≥2 本 → 提炼作家风格共性
+   - 读完整个合集 → 全集总结
 3. 跨书总结格式：
    - 作家印象：你在这些书里反复被打动的点
-   - 演进轨迹：该作家不同时期的风格变化（如果可检测）
    - 下一本推荐：合集内未读的、与已读偏好最匹配的

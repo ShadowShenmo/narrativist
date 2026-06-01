@@ -4,12 +4,16 @@ Narrativist Skill - 跨平台书籍初始化脚本
 
 两阶段设计：
   阶段一：python init_book.py <epub_path>
-    → 快速初始化（<10秒）：SHA256、解压、解析 TOC、生成 books 列表
-    → 输出 progress.json（含 books 元数据，无文本内容）
+    → 快速初始化（<1秒）：SHA256、解压、解析 TOC、生成 books 列表
+    → 输出 {sha}-progress.json（含 books 元数据，无文本内容）
 
   阶段二：python init_book.py <epub_path> --extract <book_index>
     → 按需提取：只提取指定书的文本，保留章节边界
-    → 更新 progress.json（填充该书的 chapters 和文本）
+    → 输出 {sha}_book{N}-progress.json（该书的独立状态文件）
+    → library 模式下不覆盖主 progress.json
+
+  完成标记：python init_book.py <epub_path> --complete <book_index>
+    → 标记该书为已完成，更新主 progress.json
 """
 
 import sys
@@ -282,9 +286,12 @@ def build_books_list(toc_entries, spine_items, extract_dir):
         return books
 
     else:
-        # 单层 TOC：检测是否为"部"结构
+        # 单层 TOC：检测是否为"部/章"结构
+        # 更精确的匹配：标题含"第"且后跟数字/中文数字，或含"部""章""Part""Volume"
+        part_pattern = re.compile(r'第[一二三四五六七八九十百千\d]+[部章卷节回]')
         parts = []
         current_part = None
+        orphan_entries = []  # 不匹配 is_part 的条目
 
         for entry in toc_entries:
             title = entry['title']
@@ -293,7 +300,8 @@ def build_books_list(toc_entries, spine_items, extract_dir):
             if is_skip(title):
                 continue
 
-            is_part = any(kw in title for kw in ['第', '部', 'Part', 'part', '卷', 'Volume'])
+            is_part = bool(part_pattern.search(title)) or \
+                      any(kw in title for kw in ['Part ', 'part ', 'Volume '])
 
             if is_part:
                 if current_part:
@@ -304,12 +312,31 @@ def build_books_list(toc_entries, spine_items, extract_dir):
                     'files': [src.split('#')[0]]
                 }
             elif current_part:
+                # 属于当前 part 的子条目
                 f = src.split('#')[0]
                 if f not in current_part['files']:
                     current_part['files'].append(f)
+            else:
+                # 不属于任何 part，记录下来
+                orphan_entries.append(entry)
 
         if current_part:
             parts.append(current_part)
+
+        # 将孤立条目附加到最近的 part，或作为独立条目
+        for orphan in orphan_entries:
+            src = orphan['src'].split('#')[0]
+            if parts:
+                # 附加到上一个 part
+                if src not in parts[-1]['files']:
+                    parts[-1]['files'].append(src)
+            else:
+                # 作为独立 part
+                parts.append({
+                    'name': orphan['title'],
+                    'type': 'single',
+                    'files': [src]
+                })
 
         if parts:
             for part in parts:
@@ -332,38 +359,67 @@ def build_books_list(toc_entries, spine_items, extract_dir):
 
 
 def expand_files(base_files, spine_items):
-    """将基础文件名展开为完整的 spine 文件列表"""
+    """将基础文件名展开为完整的 spine 文件列表
+
+    精确匹配：base_file 的文件名部分必须在 spine 中存在
+    """
     all_files = []
+    spine_hrefs = {os.path.basename(item['href']): item['href'] for item in spine_items}
+
     for base_file in base_files:
-        prefix = base_file.split('_')[0] if '_' in base_file else \
-                 base_file.replace('.html', '').replace('.xhtml', '')
-        for item in spine_items:
-            if item['href'].startswith(prefix):
-                if item['href'] not in all_files:
-                    all_files.append(item['href'])
+        basename = os.path.basename(base_file)
+        if basename in spine_hrefs:
+            href = spine_hrefs[basename]
+            if href not in all_files:
+                all_files.append(href)
+        else:
+            # 回退：前缀匹配（处理 split 文件的情况）
+            prefix = basename.split('_')[0] if '_' in basename else \
+                     basename.replace('.html', '').replace('.xhtml', '')
+            for item in spine_items:
+                if os.path.basename(item['href']).startswith(prefix):
+                    if item['href'] not in all_files:
+                        all_files.append(item['href'])
+
     return all_files if all_files else base_files
 
 
 def estimate_chars(files, extract_dir):
-    """快速估算文本字数（只读前 500 字采样）"""
+    """快速估算文本字数（采样多个文件取平均）"""
     if not files:
         return 0
-    sample_file = files[0]
-    for root, dirs, fs in os.walk(extract_dir):
-        for f in fs:
-            if f == sample_file or sample_file.endswith(f):
-                try:
-                    with open(os.path.join(root, f), 'r', encoding='utf-8') as fh:
-                        text = fh.read(2000)
-                    parser = HTMLTextExtractor()
-                    parser.feed(text)
-                    clean = parser.get_text().strip()
-                    # 按比例估算
-                    avg_chars_per_file = len(clean) * (len(files) / 1)
-                    return int(avg_chars_per_file)
-                except:
-                    return 0
-    return 0
+
+    # 采样：取前 3 个文件和最后 1 个文件
+    sample_indices = list(set([0, 1, 2, len(files) - 1]))
+    sample_indices = [i for i in sample_indices if i < len(files)]
+
+    total_sampled_chars = 0
+    sampled_count = 0
+
+    for idx in sample_indices:
+        sample_file = files[idx]
+        for root, dirs, fs in os.walk(extract_dir):
+            for f in fs:
+                if f == os.path.basename(sample_file) or sample_file.endswith(f):
+                    try:
+                        with open(os.path.join(root, f), 'r', encoding='utf-8') as fh:
+                            text = fh.read(5000)
+                        parser = HTMLTextExtractor()
+                        parser.feed(text)
+                        clean = parser.get_text().strip()
+                        total_sampled_chars += len(clean)
+                        sampled_count += 1
+                    except:
+                        pass
+                    break
+
+    if sampled_count == 0:
+        return 0
+
+    avg_chars_per_file = total_sampled_chars / sampled_count
+    # read 5000 bytes but actual file may be larger, scale by ratio
+    # Assume sampled portion is representative
+    return int(avg_chars_per_file * len(files))
 
 
 # ── 阶段二：按需提取 ──────────────────────────────────────────
@@ -467,13 +523,13 @@ def diagnose_mode(num_chapters, chapter_names=None, books_count=0):
 
     # 合集关键词：标题含"篇""故事""短篇""小说集"等
     anthology_kw = ['篇', '故事', '短篇', '小说集', 'tale', 'story', 'stories',
-                    '选集', '合集', '文集']
+                    '合集']
     for name in names:
         for kw in anthology_kw:
             if kw in name:
                 return 'anthology', 'high', f'标题含合集关键词「{kw}」'
 
-    # 嵌套合集关键词：标题含"卷""册""书""全集"等
+    # 嵌套合集关键词：标题含"卷""册""书""全集""选集""文集"等
     library_kw = ['卷', '册', '全集', '选集', '文集']
     for name in names:
         for kw in library_kw:
@@ -613,25 +669,21 @@ def main():
         chapters = extract_book(init['extract_dir'], book, chapters_dir, book_index)
         print(f"提取完成: {len(chapters)} 章")
 
-        # 更新 progress.json
-        progress_path = state_dir / f'{init["sha"]}-progress.json'
-        if progress_path.exists():
-            progress = json.load(open(progress_path, encoding='utf-8'))
-        else:
-            progress = {}
-
         # 模式诊断
         ch_names = [c['name'] for c in chapters]
-        if len(init['books']) > 1:
-            mode = 'standard_chapter'  # 单本书在 library 内用 standard_chapter
+        is_library = len(init['books']) > 1
+        if is_library:
+            mode = 'standard_chapter'
             confidence = 'high'
             reason = 'library 内的单本书'
         else:
             mode, confidence, reason = diagnose_mode(len(chapters), ch_names)
 
-        progress.update({
+        # 构建该书的独立状态
+        book_progress = {
             'book_sha': init['sha'],
-            'title': book['name'],
+            'book_index': book_index,
+            'book_title': book['name'],
             'author': init['author'],
             'mode': mode,
             'total_chapters': len(chapters),
@@ -649,28 +701,107 @@ def main():
             'characters': [],
             'used_thematic_probes': 0,
             'consecutive_transitional': 0,
-            'reader_signals': progress.get('reader_signals', [])
-        })
+            'reader_signals': []
+        }
+
+        if is_library:
+            # library 模式：写入该书的独立状态文件，不覆盖主 progress.json
+            book_progress_path = state_dir / f'{init["sha"]}_book{book_index}-progress.json'
+            with open(book_progress_path, 'w', encoding='utf-8') as f:
+                json.dump(book_progress, f, ensure_ascii=False, indent=2)
+
+            # 创建该书的输出目录
+            book_output_dir = skill_dir / 'output' / init['sha'] / f'book{book_index}'
+            os.makedirs(book_output_dir, exist_ok=True)
+
+            total_chars = sum(c['length'] for c in chapters)
+            print(f"总字数: {total_chars:,}")
+            print(f"模式: {mode}")
+            print(f"书状态文件: {book_progress_path}")
+            print(f"输出目录: {book_output_dir}")
+
+            result = {
+                'status': 'ok',
+                'book_index': book_index,
+                'book_name': book['name'],
+                'chapters': len(chapters),
+                'total_chars': total_chars,
+                'mode': mode,
+                'confidence': confidence,
+                'reason': reason,
+                'is_library': True,
+                'progress_file': str(book_progress_path)
+            }
+        else:
+            # 单书模式：写入主 progress.json
+            progress_path = state_dir / f'{init["sha"]}-progress.json'
+            book_progress['created_at'] = datetime.now().isoformat()
+            with open(progress_path, 'w', encoding='utf-8') as f:
+                json.dump(book_progress, f, ensure_ascii=False, indent=2)
+
+            total_chars = sum(c['length'] for c in chapters)
+            print(f"总字数: {total_chars:,}")
+            print(f"模式: {mode}")
+            print(f"进度文件: {progress_path}")
+
+            result = {
+                'status': 'ok',
+                'book_name': book['name'],
+                'chapters': len(chapters),
+                'total_chars': total_chars,
+                'mode': mode,
+                'confidence': confidence,
+                'reason': reason,
+                'is_library': False,
+                'progress_file': str(progress_path)
+            }
+
+        print(f"\n{json.dumps(result, ensure_ascii=False)}")
+        return
+
+    # ── 阶段三：标记完成 ──
+    if '--complete' in sys.argv:
+        idx = sys.argv.index('--complete')
+        if idx + 1 >= len(sys.argv):
+            print("错误: --complete 需要书的索引号")
+            sys.exit(1)
+
+        book_index = int(sys.argv[idx + 1])
+        sha = calculate_sha256(epub_path)
+        progress_path = state_dir / f'{sha}-progress.json'
+
+        if not progress_path.exists():
+            print("错误: 未找到主 progress.json，请先运行阶段一")
+            sys.exit(1)
+
+        progress = json.load(open(progress_path, encoding='utf-8'))
+
+        if 'books' not in progress:
+            print("错误: 非 library 模式，无需 --complete")
+            sys.exit(1)
+
+        if book_index < 1 or book_index > len(progress['books']):
+            print(f"错误: 索引超出范围 (1-{len(progress['books'])})")
+            sys.exit(1)
+
+        # 标记完成
+        progress['books'][book_index - 1]['status'] = 'completed'
+        progress['current_book'] = book_index  # 指向下一本
+
+        # 统计已完成数
+        completed = sum(1 for b in progress['books'] if b.get('status') == 'completed')
+        total = len(progress['books'])
 
         with open(progress_path, 'w', encoding='utf-8') as f:
             json.dump(progress, f, ensure_ascii=False, indent=2)
 
-        total_chars = sum(c['length'] for c in chapters)
-        print(f"总字数: {total_chars:,}")
-        print(f"模式: {mode}")
-        print(f"进度文件: {progress_path}")
-
-        # 输出 JSON 供 Claude 读取
         result = {
             'status': 'ok',
-            'book_name': book['name'],
-            'chapters': len(chapters),
-            'total_chars': total_chars,
-            'mode': mode,
-            'confidence': confidence,
-            'reason': reason,
-            'need_web_search': should_search_web(mode, confidence),
-            'need_user_confirm': should_ask_user(mode, confidence)
+            'book_index': book_index,
+            'book_title': progress['books'][book_index - 1]['title'],
+            'completed': completed,
+            'total': total,
+            'all_done': completed == total
         }
         print(f"\n{json.dumps(result, ensure_ascii=False)}")
         return

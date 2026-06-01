@@ -4,6 +4,14 @@
 
 适用：单独短篇、中篇小说、或 EPUB 只有 1 章的连续叙事。
 
+## 前置条件
+
+短模式需要先提取文本。如果 Phase 1 诊断为 `short`，Claude 需先调用：
+```bash
+python init_book.py "book.epub" --extract 1
+```
+提取后再进入本模式的流程。如果提取后发现实际有多个章节，模式应更新为 `standard_chapter`。
+
 ## 问题数量
 
 根据文本长度分级：
