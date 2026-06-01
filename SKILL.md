@@ -77,38 +77,39 @@ for unit in unit_plan.units:
        - 问题模板 → references/guide-questions.md
        - 按 L1/L2/L3 轮换选取
 
-    4. 输出引导问题
+    4. 输出引导观察（不是问题）
        **关键词**：{1-2 个意象词}
-       **引导问题**：{口语化的问题}
-       > 读到想聊的地方，随时发一句「这里」加你的想法，我会接住。
+       {细节——twist 翻转}
+       > [空格继续] 或发一句「这里」加你的想法
 
-    5. 等待用户回答（或跳过）
+    5. 等待用户
+       - 空格/回车 → 下一单元
+       - 打字分享 → 记录 + 展示参考回答（三段式）
+       - 连续静默 → 呼吸节奏调节（详见 guide-questions.md）
 
-    6. 展示参考回答（三段式：证据 + 分析 + 延伸）
+    6. 更新 progress.json：current_unit++, completed_units.append()
 
-    7. 读后一问（可跳过）
-
-    8. 测验（可跳过，默认关）
-       → references/component-quiz.md
-
-    9. 更新 progress.json：current_unit++, completed_units.append()
-
-   10. 增量导出：追加到 output/{sha}/reading-journal.md
+    7. 增量导出：追加到 output/{sha}/reading-journal.md
        → references/component-export.md
 ```
 
-## 问题选择策略
+## 观察选择策略
 
 **不按书类型选，按当前单元文本特征选。**
 
 你在读单元文本时，自然会注意到：
-- 有对话、有情节推进 → 用叙事类模板（Template 1/3/9/10）
-- 大量环境描写、感官细节 → 用氛围类模板（Template 2/6）
-- 议论、抒情、思绪流动 → 用语言类模板（Template 8/12）
-- 暴露核心主题 → 用主题类模板（Template 4）
-- 意象反复出现 → 用意象类模板（Template 11）
+- 有对话、有情节推进 → 叙事类模板（Template 1/3/9/10）
+- 大量环境描写、感官细节 → 氛围类模板（Template 2/6）
+- 议论、抒情、思绪流动 → 语言类模板（Template 8/12）
+- 暴露核心主题 → 主题类模板（Template 4）
+- 意象反复出现 → 意象类模板（Template 11）
 
-不需要显式分类，你读完文本自然知道该问什么。
+**观察的写法**：引用一个细节（<15字）+ twist 翻转（<15字），用"——"连接。不用问号。
+
+**呼吸节奏**：
+- 当前单元无值得分享的细节 → 静默跳过
+- 连续 2 单元静默 → 第 3 单元阈值放宽
+- 连续 3 单元有分享 → 下一单元 50% 概率静默
 
 ## 数据结构
 
