@@ -133,68 +133,237 @@ def parse_spine(opf_path):
     return spine_items
 
 
-def extract_chapters(extract_dir, spine_items, chapters_dir):
+def parse_toc_ncx(extract_dir):
+    """解析 toc.ncx 目录结构"""
+    ncx_path = os.path.join(extract_dir, 'toc.ncx')
+
+    if not os.path.exists(ncx_path):
+        # 尝试查找其他可能的目录文件
+        for root, dirs, files in os.walk(extract_dir):
+            for f in files:
+                if f.endswith('.ncx') or f == 'nav.xhtml':
+                    ncx_path = os.path.join(root, f)
+                    break
+
+    if not os.path.exists(ncx_path):
+        return None
+
+    try:
+        tree = ET.parse(ncx_path)
+        root = tree.getroot()
+
+        ns = {'ncx': 'http://www.daisy.org/z3986/2005/ncx/'}
+
+        toc_entries = []
+
+        def parse_navpoint(navpoint, level=0):
+            label = navpoint.find('ncx:navLabel/ncx:text', ns)
+            content = navpoint.find('ncx:content', ns)
+
+            if label is not None and content is not None:
+                title = label.text
+                src = content.get('src')
+                toc_entries.append({
+                    'level': level,
+                    'title': title,
+                    'src': src
+                })
+
+            # 递归处理子项
+            for child in navpoint.findall('ncx:navPoint', ns):
+                parse_navpoint(child, level + 1)
+
+        # 解析 navMap
+        nav_map = root.find('ncx:navMap', ns)
+        if nav_map is not None:
+            for navpoint in nav_map.findall('ncx:navPoint', ns):
+                parse_navpoint(navpoint)
+
+        return toc_entries
+
+    except Exception as e:
+        print(f"Warning: Failed to parse TOC: {e}", file=sys.stderr)
+        return None
+
+
+def detect_book_structure(toc_entries, spine_items):
+    """根据目录结构检测书籍类型和章节组织"""
+    if not toc_entries:
+        # 没有目录信息，使用 spine 顺序
+        return {
+            'type': 'sequential',
+            'chapters': [{'name': f'Chapter {i+1}', 'files': [item['href']]} for i, item in enumerate(spine_items)]
+        }
+
+    # 分析目录结构
+    parts = []
+    current_part = None
+
+    for entry in toc_entries:
+        title = entry['title']
+        src = entry['src']
+
+        # 检测是否为"部"或"Part"
+        is_part = any(keyword in title for keyword in ['第', '部', 'Part', 'part', '卷', 'Volume'])
+
+        if is_part:
+            if current_part:
+                parts.append(current_part)
+            current_part = {
+                'name': title,
+                'files': [src.split('#')[0]]  # 移除锚点
+            }
+        elif current_part:
+            # 当前条目属于上一个"部"
+            file_name = src.split('#')[0]
+            if file_name not in current_part['files']:
+                current_part['files'].append(file_name)
+
+    # 添加最后一个部
+    if current_part:
+        parts.append(current_part)
+
+    if parts:
+        # 为每个部收集所有相关的 split 文件
+        for part in parts:
+            base_files = part['files'].copy()
+            all_files = []
+
+            for base_file in base_files:
+                # 获取文件名前缀（如 part0003）
+                file_prefix = base_file.split('_')[0] if '_' in base_file else base_file.replace('.html', '')
+
+                # 在 spine 中查找所有匹配的文件
+                for spine_item in spine_items:
+                    spine_href = spine_item['href']
+                    if spine_href.startswith(file_prefix):
+                        if spine_href not in all_files:
+                            all_files.append(spine_href)
+
+            part['files'] = all_files if all_files else base_files
+
+        return {
+            'type': 'structured',
+            'chapters': parts
+        }
+    else:
+        # 没有检测到"部"结构，使用目录条目作为章节
+        return {
+            'type': 'toc_based',
+            'chapters': [{'name': entry['title'], 'files': [entry['src'].split('#')[0]]} for entry in toc_entries]
+        }
+
+
+def extract_chapters(extract_dir, spine_items, chapters_dir, book_structure=None):
     """提取章节纯文本"""
     os.makedirs(chapters_dir, exist_ok=True)
 
-    chapter_count = 0
-    for item in spine_items:
-        if item['media_type'] == 'application/xhtml+xml':
-            href = item['href']
-            file_path = os.path.join(extract_dir, href)
+    # 如果有书籍结构信息，按结构提取
+    if book_structure and book_structure['type'] == 'structured':
+        chapters = []
+        for i, part in enumerate(book_structure['chapters']):
+            all_text = []
+            for file_name in part['files']:
+                file_path = os.path.join(extract_dir, file_name)
+                if not os.path.exists(file_path):
+                    # 尝试查找文件
+                    for root_dir, dirs, files in os.walk(extract_dir):
+                        for f in files:
+                            if f == file_name or file_name.endswith(f):
+                                file_path = os.path.join(root_dir, f)
+                                break
 
-            # 如果文件不存在，尝试查找
-            if not os.path.exists(file_path):
-                for root_dir, dirs, files in os.walk(extract_dir):
-                    for f in files:
-                        if f == href or href.endswith(f):
-                            file_path = os.path.join(root_dir, f)
-                            break
+                if os.path.exists(file_path):
+                    try:
+                        with open(file_path, 'r', encoding='utf-8') as f:
+                            content = f.read()
 
-            if os.path.exists(file_path):
-                try:
-                    with open(file_path, 'r', encoding='utf-8') as f:
-                        content = f.read()
+                        parser = HTMLTextExtractor()
+                        parser.feed(content)
+                        text = parser.get_text()
 
-                    parser = HTMLTextExtractor()
-                    parser.feed(content)
-                    text = parser.get_text()
+                        # 清理文本
+                        text = re.sub(r'\n\s*\n', '\n\n', text)
+                        text = text.strip()
 
-                    # 清理文本
-                    text = re.sub(r'\n\s*\n', '\n\n', text)
-                    text = text.strip()
+                        if len(text) > 100:
+                            all_text.append(text)
+                    except Exception as e:
+                        print(f"Warning: Failed to process {file_name}: {e}", file=sys.stderr)
 
-                    # 只保存有实质内容的章节
-                    if len(text) > 100:
-                        chapter_count += 1
-                        chapter_file = os.path.join(chapters_dir, f'ch{chapter_count:02d}.txt')
-                        with open(chapter_file, 'w', encoding='utf-8') as f:
-                            f.write(text)
-                except Exception as e:
-                    print(f"Warning: Failed to process {href}: {e}", file=sys.stderr)
+            # 合并该部分的所有文本
+            if all_text:
+                combined_text = '\n\n'.join(all_text)
+                chapter_file = os.path.join(chapters_dir, f'part{i+1}.txt')
+                with open(chapter_file, 'w', encoding='utf-8') as f:
+                    f.write(combined_text)
 
-    return chapter_count
-
-
-def diagnose_mode(chapters_dir):
-    """三阶段智能诊断"""
-    chapters = []
-    for f in sorted(os.listdir(chapters_dir)):
-        if f.endswith('.txt'):
-            filepath = os.path.join(chapters_dir, f)
-            with open(filepath, 'r', encoding='utf-8') as file:
-                content = file.read()
                 chapters.append({
-                    'file': f,
-                    'length': len(content),
-                    'preview': content[:500]
+                    'index': i + 1,
+                    'name': part['name'],
+                    'file': f'part{i+1}.txt',
+                    'length': len(combined_text)
                 })
 
+        return chapters
+
+    else:
+        # 没有结构信息，按顺序提取
+        chapters = []
+        chapter_count = 0
+
+        for item in spine_items:
+            if item['media_type'] == 'application/xhtml+xml':
+                href = item['href']
+                file_path = os.path.join(extract_dir, href)
+
+                # 如果文件不存在，尝试查找
+                if not os.path.exists(file_path):
+                    for root_dir, dirs, files in os.walk(extract_dir):
+                        for f in files:
+                            if f == href or href.endswith(f):
+                                file_path = os.path.join(root_dir, f)
+                                break
+
+                if os.path.exists(file_path):
+                    try:
+                        with open(file_path, 'r', encoding='utf-8') as f:
+                            content = f.read()
+
+                        parser = HTMLTextExtractor()
+                        parser.feed(content)
+                        text = parser.get_text()
+
+                        # 清理文本
+                        text = re.sub(r'\n\s*\n', '\n\n', text)
+                        text = text.strip()
+
+                        # 只保存有实质内容的章节
+                        if len(text) > 100:
+                            chapter_count += 1
+                            chapter_file = os.path.join(chapters_dir, f'ch{chapter_count:02d}.txt')
+                            with open(chapter_file, 'w', encoding='utf-8') as f:
+                                f.write(text)
+
+                            chapters.append({
+                                'index': chapter_count,
+                                'name': f'Chapter {chapter_count}',
+                                'file': f'ch{chapter_count:02d}.txt',
+                                'length': len(text)
+                            })
+                    except Exception as e:
+                        print(f"Warning: Failed to process {href}: {e}", file=sys.stderr)
+
+        return chapters
+
+
+def diagnose_mode(chapters):
+    """三阶段智能诊断"""
     # 阶段 A：TOC 层级信号
     if len(chapters) > 20:
         mode = 'grouped_epic'
     elif len(chapters) <= 5:
-        mode = 'short'
+        mode = 'standard_chapter'
     else:
         mode = 'standard_chapter'
 
@@ -202,7 +371,7 @@ def diagnose_mode(chapters_dir):
     # 实际实现需要更复杂的人物重叠度分析
     # 这里暂时使用章节数作为主要判断依据
 
-    return mode, chapters
+    return mode
 
 
 def generate_progress(book_sha, title, author, mode, chapters, output_path):
@@ -216,12 +385,13 @@ def generate_progress(book_sha, title, author, mode, chapters, output_path):
         'current_chapter': 0,
         'chapters': [
             {
-                'index': i + 1,
+                'index': ch['index'],
+                'name': ch['name'],
                 'file': ch['file'],
                 'length': ch['length'],
                 'status': 'pending'
             }
-            for i, ch in enumerate(chapters)
+            for ch in chapters
         ],
         'created_at': datetime.now().isoformat(),
         'reader_signals': {},
@@ -287,18 +457,30 @@ def main():
     print(f"书名: {metadata['title']}")
     print(f"作者: {metadata['author']}")
 
-    # Step 4: 提取章节
-    print("提取章节...")
+    # Step 4: 解析目录结构
+    print("解析目录结构...")
+    toc_entries = parse_toc_ncx(extract_dir)
     spine_items = parse_spine(metadata['opf_path'])
-    chapter_count = extract_chapters(extract_dir, spine_items, chapters_dir)
-    print(f"提取完成: {chapter_count} 章")
 
-    # Step 5: 模式诊断
+    if toc_entries:
+        print(f"目录条目: {len(toc_entries)}")
+        book_structure = detect_book_structure(toc_entries, spine_items)
+        print(f"结构类型: {book_structure['type']}")
+    else:
+        print("未找到目录文件，按顺序提取")
+        book_structure = None
+
+    # Step 5: 提取章节
+    print("提取章节...")
+    chapters = extract_chapters(extract_dir, spine_items, chapters_dir, book_structure)
+    print(f"提取完成: {len(chapters)} 章/部")
+
+    # Step 6: 模式诊断
     print("模式诊断...")
-    mode, chapters = diagnose_mode(chapters_dir)
+    mode = diagnose_mode(chapters)
     print(f"模式: {mode}")
 
-    # Step 6: 生成 progress.json
+    # Step 7: 生成 progress.json
     print("生成进度文件...")
     progress = generate_progress(
         book_sha,
@@ -317,14 +499,14 @@ def main():
 
     # 完成
     print("\n" + "=" * 50)
-    print(f"✅ 初始化完成!")
+    print("[OK] 初始化完成!")
     print(f"书名: {metadata['title']}")
     print(f"作者: {metadata['author']}")
-    print(f"章节数: {chapter_count}")
+    print(f"章节数: {len(chapters)}")
     print(f"模式: {mode}")
     print(f"SHA256: {book_sha}")
     print("=" * 50)
-    print(f"\n已加载《{metadata['title']}》，共 {chapter_count} 章。准备好了就开始第一章？")
+    print(f"\n已加载《{metadata['title']}》，共 {len(chapters)} 章/部。准备好了就开始第一章？")
 
 
 if __name__ == '__main__':
