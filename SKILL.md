@@ -49,7 +49,9 @@ they read with intention and come back to deepen their understanding.
 | `grouped_epic` | `references/mode-grouped-epic.md` | 按组 | >20 章连续叙事 |
 | `anthology` | `references/mode-anthology.md` | 逐篇 | 短篇小说合集 |
 | `short` | `references/mode-short-form.md` | 全篇一次 | 短篇/中篇（<6万字） |
-| `essay` | `references/mode-essay.md` | 逐篇 | 散文/随笔/杂文/书信集 |
+| `essay` | `references/mode-essay.md` | 逐篇 | 散文/随笔/杂文 |
+| `epistolary` | `references/mode-essay.md` | 逐篇 | 书信/日记（复用散文模式，侧重私密声音） |
+| `drama` | `references/mode-essay.md` | 逐幕/逐场 | 戏剧/剧本（复用散文模式，侧重对话节奏） |
 | `library` | `references/mode-library.md` | 逐书 | 多书合集 |
 
 共享组件：
@@ -135,14 +137,16 @@ output/{sha}/book{N}/chapter-{M}.md # 每本书的章节记录（不冲突）
 | P3 | 2-20 章连续叙事 | standard_chapter | medium |
 
 Claude 运行时根据 confidence 路由：
-- `high` → 直接进入章节循环（TOC 信号明确：多书合集、合集关键词、>20章、部/卷结构）
-- `medium` → 网络搜索确认（章节数信号不够明确：1章、2-20章无结构关键词）
-- `low` → 询问用户（TOC 无结构、无序言、无法判断）
+- `high` → 直接进入章节循环
+- `medium` → 进入章节循环（可选：展示诊断结果让用户确认）
+- `low` → 询问用户（展示候选模式，5 秒超时自动按最可能选项执行）
 
 置信度判定标准：
-- high = 单一信号足以确定模式（如 TOC 有 9 个独立书名 → library）
-- medium = 信号存在但可能有歧义（如 1 章可能是短篇或中篇，需确认字数）
-- low = 无可用信号（TOC 解析失败、无序言）
+- high = 单一信号足以确定模式（元数据关键词、TOC 结构、内容采样明确）
+- medium = 信号存在但可能有歧义（如 1 章可能是短篇或中篇）
+- low = 三层均无法判定（TOC 解析失败、无序言、内容采样模糊）
+
+诊断缓存：首次诊断后写入 `state/{sha}-diagnosis.json`，下次直接复用（<1ms）。
 
 ---
 

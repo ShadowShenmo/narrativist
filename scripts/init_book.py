@@ -69,7 +69,7 @@ def extract_epub(epub_path, extract_dir):
 
 
 def parse_metadata(extract_dir):
-    """解析 OPF 元数据，提取书名和作者"""
+    """解析 OPF 元数据，提取书名、作者、类型、主题"""
     opf_path = None
     for root, dirs, files in os.walk(extract_dir):
         for f in files:
@@ -88,17 +88,34 @@ def parse_metadata(extract_dir):
         'dc': 'http://purl.org/dc/elements/1.1/'
     }
 
-    title = root.find('.//dc:title', ns)
-    author = root.find('.//dc:creator', ns)
+    def get_text(tag):
+        el = root.find(f'.//{tag}', ns)
+        return el.text.strip() if el is not None and el.text else None
 
-    # 尝试提取所有作者（合集可能有多个）
-    authors = root.findall('.//dc:creator', ns)
-    author_list = [a.text for a in authors if a.text]
+    def get_all(tag):
+        return [el.text.strip() for el in root.findall(f'.//{tag}', ns) if el.text]
+
+    # dc:type 可能包含 "fiction", "poetry", "drama", "nonfiction" 等
+    dc_type = get_text('dc:type')
+    # dc:subject 可能包含 "短篇小说集", "诗集", "散文" 等
+    dc_subjects = get_all('dc:subject')
+    # dc:description 可能包含体裁描述
+    dc_description = get_text('dc:description')
+
+    # spine 条目数（比 TOC 更真实的正文文件数）
+    spine_count = 0
+    spine_el = root.find('.//opf:spine', ns)
+    if spine_el is not None:
+        spine_count = len(spine_el.findall('opf:itemref', ns))
 
     return {
-        'title': title.text if title is not None else 'Unknown',
-        'author': author.text if author is not None else 'Unknown',
-        'authors': author_list,
+        'title': get_text('dc:title') or 'Unknown',
+        'author': get_text('dc:creator') or 'Unknown',
+        'authors': get_all('dc:creator'),
+        'dc_type': dc_type,
+        'dc_subjects': dc_subjects,
+        'dc_description': dc_description,
+        'spine_count': spine_count,
         'opf_path': opf_path
     }
 
@@ -212,6 +229,7 @@ def quick_init(epub_path):
         'title': metadata['title'],
         'author': metadata['author'],
         'authors': metadata['authors'],
+        'metadata': metadata,  # 完整元数据（含 dc_type, dc_subjects 等）
         'extract_dir': str(extract_dir),
         'spine_items': spine_items,
         'books': books,
@@ -489,102 +507,189 @@ def extract_single_file(extract_dir, file_name):
     return None
 
 
-def diagnose_mode(num_chapters, chapter_names=None, books_count=0):
-    """优先级 switch 模式诊断
+def diagnose_layer0(metadata):
+    """Layer 0: OPF 元数据诊断（<5ms）
 
-    返回 (mode, confidence, reason)
-      confidence: 'high' | 'medium' | 'low'
-      reason: 人类可读的判断依据
-
-    优先级：
-      1. TOC 结构信号（多书合集 / 关键词） → high
-      2. 章节数信号 → medium-high
-      3. 以上都不匹配 → low（需要进一步调查）
+    dc:type → 直接映射
+    dc:subject / dc:description → 关键词匹配
+    返回 (mode, confidence, reason) 或 None
     """
-    names = [n.lower() for n in (chapter_names or [])]
+    dc_type = (metadata.get('dc_type') or '').lower()
+    subjects = ' '.join(metadata.get('dc_subjects', [])).lower()
+    description = (metadata.get('dc_description') or '').lower()
+    combined = f"{subjects} {description}"
 
-    # ── Priority 1: TOC 结构信号（最可靠）──
+    type_map = {
+        'poetry': ('poetry', 'OPF dc:type 标注为 poetry'),
+        'drama': ('drama', 'OPF dc:type 标注为 drama'),
+        'nonfiction': ('nonfiction', 'OPF dc:type 标注为 nonfiction'),
+    }
+    if dc_type in type_map:
+        return type_map[dc_type]
 
-    # 多书合集：init_book.py 已检测到多个 L1 书籍
-    # 但要区分"多书合集"和"单书多部"：
-    #   - 标题含连续叙事关键词（第X部、第X章）→ standard_chapter
-    #   - 标题是独立书名 → library
+    kw_map = [
+        (['诗集', '诗歌', 'poetry', 'poems', 'verse'], 'poetry'),
+        (['剧本', '戏剧', 'drama', 'play', 'theatre'], 'drama'),
+        (['散文', '随笔', '杂文', 'essay', 'prose'], 'essay'),
+        (['书信', '日记', '信札', 'letter', 'diary', 'epistolary'], 'epistolary'),
+        (['短篇小说', '短篇集', '故事集', 'short stories'], 'anthology'),
+        (['长篇小说', 'novel'], 'standard_chapter'),
+        (['传记', '回忆录', 'biography', 'memoir'], 'nonfiction'),
+    ]
+    for keywords, mode in kw_map:
+        for kw in keywords:
+            if kw in combined:
+                return mode, 'high', f'元数据含关键词「{kw}」'
+
+    return None
+
+
+def diagnose_layer1(toc_entries, books_count):
+    """Layer 1: TOC 结构指纹（<10ms）
+
+    条目数、层级深度、标题文本模式
+    返回 (mode, confidence, reason) 或 None
+    """
+    if not toc_entries:
+        return None
+
+    names = [e['title'] for e in toc_entries if e.get('level', 0) == 0]
+    names_lower = [n.lower() for n in names]
+
     if books_count > 1:
-        # 检查是否为连续叙事（单书多部）
         narrative_kw = ['部', '章', '卷', 'part', 'chapter', 'volume']
-        sequential_count = sum(
-            1 for name in names
-            if any(kw in name for kw in narrative_kw)
-        )
-        # 如果大部分标题含叙事关键词，且总数 ≤ 5，视为单书多部
-        if books_count <= 5 and sequential_count >= books_count * 0.6:
-            return 'standard_chapter', 'high', f'{books_count} 部连续叙事（单书结构）'
+        seq = sum(1 for n in names_lower if any(kw in n for kw in narrative_kw))
+        if books_count <= 5 and seq >= books_count * 0.6:
+            return 'standard_chapter', 'high', f'{books_count} 部连续叙事'
         return 'library', 'high', f'TOC 检测到 {books_count} 本独立书籍'
 
-    # 散文/随笔关键词（优先于小说合集检测）
-    essay_kw = ['散文', '随笔', '杂文', '书信', '日记', '札记', '笔记',
-                'essay', 'memoir', 'letter', 'diary', 'journal']
-    for name in names:
-        for kw in essay_kw:
-            if kw in name:
-                return 'essay', 'high', f'标题含散文关键词「{kw}」'
+    kw_groups = [
+        (['散文', '随笔', '杂文', '书信', '日记', 'essay', 'memoir', 'letter', 'diary'], 'essay'),
+        (['幕', '场', 'act', 'scene'], 'drama'),
+        (['篇', '故事', '短篇', '小说集', 'story', 'stories'], 'anthology'),
+        (['卷', '册', '全集', '选集', '文集'], 'library'),
+    ]
+    for keywords, mode in kw_groups:
+        for n in names_lower:
+            for kw in keywords:
+                if kw in n:
+                    return mode, 'high', f'TOC 含关键词「{kw}」'
 
-    # 合集关键词：标题含"篇""故事""短篇""小说集"等
-    anthology_kw = ['篇', '故事', '短篇', '小说集', 'tale', 'story', 'stories',
-                    '合集']
-    for name in names:
-        for kw in anthology_kw:
-            if kw in name:
-                return 'anthology', 'high', f'标题含合集关键词「{kw}」'
+    num = len(names)
+    if num == 0:
+        return None
+    if num == 1:
+        return 'short', 'medium', '单章文本'
+    if num > 20:
+        return 'grouped_epic', 'high', f'{num} 章'
 
-    # 嵌套合集关键词：标题含"卷""册""书""全集""选集""文集"等
-    library_kw = ['卷', '册', '全集', '选集', '文集']
-    for name in names:
-        for kw in library_kw:
-            if kw in name:
-                return 'library', 'high', f'标题含合集关键词「{kw}」'
+    strong = ['部', '卷', '册', 'Part', 'Volume']
+    if num <= 10 and any(any(kw in n for kw in strong) for n in names):
+        return 'standard_chapter', 'high', f'{num} 部/卷'
 
-    # ── Priority 2: 章节数 + 字数信号 ──
-
-    if num_chapters == 0:
-        return 'short', 'medium', '无章节'
-
-    if num_chapters == 1:
-        return 'short', 'medium', '单章文本（待阶段二确认是短篇还是中篇）'
-
-    if num_chapters > 20:
-        return 'grouped_epic', 'high', f'{num_chapters} 章，超过 20 章阈值'
-
-    # 少量章但标题含"部/卷/册" → 可能是大部头（如普鲁斯特单卷 3 部）
-    narrative_kw_strong = ['部', '卷', '册', 'Part', 'Volume', 'Book']
-    has_narrative_kw = any(any(kw in name for kw in narrative_kw_strong) for name in names)
-    if num_chapters <= 10 and has_narrative_kw:
-        return 'standard_chapter', 'high', f'{num_chapters} 部/卷，连续叙事结构'
-
-    # ── Priority 3: 默认 ──
-
-    return 'standard_chapter', 'medium', f'{num_chapters} 章，连续叙事结构'
+    return None
 
 
-def should_search_web(mode, confidence, books_count=0):
-    """判断是否需要网络搜索
+def diagnose_layer2(extract_dir, spine_items):
+    """Layer 2: 内容采样（<200ms，按需）
 
-    返回 True 当：
-      - 置信度不是 high
-      - 或者是 library 模式（需要确认每本书的类型）
+    取前 1-2 个文件的前 5KB，统计文本特征
+    返回 (mode, confidence, reason) 或 None
     """
-    if confidence == 'high' and mode != 'library':
-        return False
-    if books_count > 1:
-        return True  # library 模式需要确认每本书的类型
-    return confidence != 'high'
+    content_files = [s for s in spine_items if s['media_type'] == 'application/xhtml+xml'][:2]
+    if not content_files:
+        return None
+
+    texts = []
+    for item in content_files:
+        basename = os.path.basename(item['href'])
+        for root, dirs, files in os.walk(extract_dir):
+            for f in files:
+                if f == basename or item['href'].endswith(f):
+                    try:
+                        with open(os.path.join(root, f), 'r', encoding='utf-8') as fh:
+                            raw = fh.read(8000)
+                        parser = HTMLTextExtractor()
+                        parser.feed(raw)
+                        texts.append(parser.get_text().strip())
+                    except:
+                        pass
+                    break
+
+    combined = '\n'.join(texts)
+    if len(combined) < 100:
+        return None
+
+    lines = [l.strip() for l in combined.split('\n') if l.strip()]
+
+    # 诗歌：行均 < 40 字符 + 高换行密度
+    if lines:
+        avg = sum(len(l) for l in lines) / len(lines)
+        density = len(lines) / max(len(combined), 1)
+        if avg < 40 and density > 0.02:
+            return 'poetry', 'medium', f'行均 {avg:.0f} 字符 → 诗歌特征'
+
+    # 剧本：对话标记密度高
+    quotes = combined.count('"') + combined.count('"') + combined.count('「')
+    colons = len(re.findall(r'[一-鿿]{2,6}[:：]', combined))
+    if len(combined) > 0 and (quotes + colons * 2) / len(combined) > 0.08:
+        return 'drama', 'medium', '对话标记密度高 → 剧本特征'
+
+    # 散文：第一人称高频 + 时间推进词少
+    first_person = combined.count('我') + combined.count('我们')
+    time_markers = len(re.findall(r'[后来然后接着随后最终]', combined))
+    if first_person > 5 and time_markers < 3:
+        return 'essay', 'medium', f'第一人称 {first_person} 次，时间词 {time_markers} 次 → 散文特征'
+
+    return None
 
 
-def should_ask_user(mode, confidence):
-    """判断是否需要询问用户
+def diagnose(metadata, toc_entries, books_count, extract_dir=None, spine_items=None):
+    """三层诊断流水线
 
-    返回 True 当置信度为 low
+    Layer 0: OPF 元数据 → Layer 1: TOC 指纹 → Layer 2: 内容采样
+    返回 (mode, confidence, reason, layer)
     """
+    cached = None  # 由调用方检查缓存
+
+    r = diagnose_layer0(metadata)
+    if r:
+        return (*r, 0)
+
+    r = diagnose_layer1(toc_entries, books_count)
+    if r:
+        return (*r, 1)
+
+    if extract_dir and spine_items:
+        r = diagnose_layer2(extract_dir, spine_items)
+        if r:
+            return (*r, 2)
+
+    return 'standard_chapter', 'low', '无法自动判定', -1
+
+
+def load_diagnosis_cache(sha, state_dir):
+    """加载诊断缓存"""
+    p = state_dir / f'{sha}-diagnosis.json'
+    if p.exists():
+        try:
+            return json.load(open(p, encoding='utf-8'))
+        except:
+            pass
+    return None
+
+
+def save_diagnosis_cache(sha, state_dir, mode, confidence, reason, layer):
+    """保存诊断缓存"""
+    p = state_dir / f'{sha}-diagnosis.json'
+    with open(p, 'w', encoding='utf-8') as f:
+        json.dump({'mode': mode, 'confidence': confidence, 'reason': reason,
+                   'layer': layer, 'cached_at': datetime.now().isoformat()}, f,
+                  ensure_ascii=False, indent=2)
+
+
+def should_ask_user(confidence):
+    """仅 low 置信度需要用户确认"""
     return confidence == 'low'
 
 
@@ -683,15 +788,23 @@ def main():
         chapters = extract_book(init['extract_dir'], book, chapters_dir, book_index)
         print(f"提取完成: {len(chapters)} 章")
 
-        # 模式诊断
-        ch_names = [c['name'] for c in chapters]
+        # 模式诊断（三层流水线）
         is_library = len(init['books']) > 1
         if is_library:
             mode = 'standard_chapter'
             confidence = 'high'
             reason = 'library 内的单本书'
+            layer = 0
         else:
-            mode, confidence, reason = diagnose_mode(len(chapters), ch_names)
+            # 构造 toc_entries 用于 Layer 1
+            fake_toc = [{'level': 0, 'title': ch['name'], 'src': ''} for ch in chapters]
+            mode, confidence, reason, layer = diagnose(
+                init['metadata'], fake_toc, 1,
+                extract_dir=init['extract_dir'],
+                spine_items=init['spine_items']
+            )
+            # 保存诊断缓存
+            save_diagnosis_cache(init['sha'], state_dir, mode, confidence, reason, layer)
 
         # 构建该书的独立状态
         book_progress = {
@@ -846,14 +959,26 @@ def main():
     output_dir = skill_dir / 'output' / sha
     os.makedirs(output_dir, exist_ok=True)
 
-    # 判断模式（优先级 switch）
+    # 判断模式（三层流水线 + 缓存）
     books_count = len(init['books'])
-    book_names = [b['name'] for b in init['books']]
+
+    # 检查诊断缓存
+    cached = load_diagnosis_cache(sha, state_dir)
+    if cached:
+        mode = cached['mode']
+        confidence = cached['confidence']
+        reason = cached['reason']
+        layer = cached.get('layer', -1)
+    else:
+        # 三层诊断
+        mode, confidence, reason, layer = diagnose(
+            init['metadata'], init['toc_entries'], books_count,
+            extract_dir=init['extract_dir'],
+            spine_items=init['spine_items']
+        )
+        save_diagnosis_cache(sha, state_dir, mode, confidence, reason, layer)
 
     if books_count > 1:
-        # 多书：用 diagnose_mode 判断是 library 还是 standard_chapter
-        mode, confidence, reason = diagnose_mode(books_count, book_names, books_count)
-        # 生成 books 元数据
         books_meta = []
         for i, book in enumerate(init['books']):
             books_meta.append({
@@ -864,11 +989,6 @@ def main():
                 'estimated_chars': book.get('estimated_chars', 0)
             })
     else:
-        # 单书：基于 TOC 章节数和关键词诊断
-        book = init['books'][0]
-        ch_names = [ch['name'] for ch in book.get('chapters', [])]
-        num_ch = len(ch_names) if ch_names else 1
-        mode, confidence, reason = diagnose_mode(num_ch, ch_names, books_count=1)
         books_meta = None
 
     # 生成空 progress.json（只有书籍元数据，无文本）
@@ -920,8 +1040,8 @@ def main():
         'mode': mode,
         'confidence': confidence,
         'reason': reason,
-        'need_web_search': should_search_web(mode, confidence, books_count),
-        'need_user_confirm': should_ask_user(mode, confidence),
+        'diagnosis_layer': layer,
+        'need_user_confirm': should_ask_user(confidence),
         'books_count': len(init['books']),
         'books': books_meta
     }
