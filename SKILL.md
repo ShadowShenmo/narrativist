@@ -91,26 +91,116 @@ they read with intention and come back to deepen their understanding.
 
 ---
 
-## Initialization（10 步）
+## Initialization（简化流程）
 
-0. **Bookmark check**（跨会话恢复）：计算 EPUB SHA256 前 8 位，检查 `state/{book_slug}-bookmark.json`；命中则跳过初始化直接恢复；否则走完整流程。
-1. **创建 state 目录**：`mkdir -p state`
-2. **解压 EPUB**：Python zipfile 解压到 `state/{book_slug}_extracted/`
-3. **解析元数据与 TOC**：从 OPF 文件中提取书名、作者、目录结构
-4. **提取章节纯文本**：按 spine 顺序解析 HTML/XHTML，剥标签写 `ch01.txt` 等
-5. **三阶段智能诊断（Mode Diagnosis）**：
-   - 阶段 A：TOC 层级信号（嵌套深度 ≥3 → Library；深度=2 → Grouped Epic；深度≤1/无 TOC → 阶段 B）
-   - 阶段 B：序言/前言文本关键词检测（短篇集合 → Anthology；长篇 → 阶段 C）
-   - 阶段 C：内容检测（前 3 章+后 3 章人物集合重叠度 <30% → Anthology；>20 章连续叙事 → Grouped Epic；≤20 章 → Standard）
-6. **生成 progress.json**：含分组/合集索引/阅读周期表（字数、时长估算、建议节奏）
-6.5. **外部知识注入（三层搜索）**：
-   - L1：`site:zh.wikipedia.org` 文学史定位
-   - L2：解读传统与名家评论
-   - L3：创作背景（不剧透情节）
-   - Library 模式：L2 层每本书独立执行三层搜索，已搜过的缓存
-8. **类型声明与难度评级**（Standard / Grouped Epic）：★ 评级、难在哪、阅读建议、收获预告、初始人物快照；阅读周期表展示（Grouped Epic / Library 长篇）
-9. **创建 output 目录**：`output/{book_slug}/`
-10. **宣布初始化完成**："已加载《{title}》，共 {N} 章。准备好了就开始第一章？"
+### 环境要求
+
+- **Python 3.8+**（必需，用于 EPUB 解析和文本提取）
+- **Git Bash**（Windows）/ **Terminal**（Mac/Linux）
+
+### 跨平台兼容性
+
+本 skill 支持 Mac、Linux、Windows（Git Bash）三种平台。所有文件操作统一使用 Python 处理，避免平台差异。
+
+### 快速开始（推荐）
+
+**一键初始化**：使用内置的跨平台脚本
+
+```bash
+# 进入 skill 目录
+cd ~/.claude/skills/narrativist
+
+# 运行初始化脚本
+python scripts/init_book.py "path/to/your/book.epub"
+```
+
+脚本会自动完成：
+1. ✅ 计算 EPUB SHA256
+2. ✅ 解压 EPUB
+3. ✅ 解析元数据（书名、作者）
+4. ✅ 提取章节纯文本
+5. ✅ 模式诊断（Standard / Grouped Epic / Anthology / Short / Library）
+6. ✅ 生成 progress.json
+7. ✅ 创建输出目录
+
+**输出示例**：
+```
+正在初始化: /path/to/book.epub
+计算 SHA256...
+SHA256: 1b11afa7dc47fe18
+解压 EPUB...
+解压完成: state/1b11afa7dc47fe18_extracted
+解析元数据...
+书名: 追寻逝去的时光(第1卷):去斯万家那边
+作者: 周克希
+提取章节...
+提取完成: 7 章
+模式诊断...
+模式: standard_chapter
+生成进度文件...
+进度文件: state/1b11afa7dc47fe18-progress.json
+输出目录: output/1b11afa7dc47fe18
+
+==================================================
+✅ 初始化完成!
+书名: 追寻逝去的时光(第1卷):去斯万家那边
+作者: 周克希
+章节数: 7
+模式: standard_chapter
+SHA256: 1b11afa7dc47fe18
+==================================================
+
+已加载《追寻逝去的时光(第1卷):去斯万家那边》，共 7 章。准备好了就开始第一章？
+```
+
+---
+
+### 详细流程（供开发者参考）
+
+如果需要手动控制每个步骤，可以参考以下流程：
+
+#### Step -1: 环境检测与 Python 验证
+
+```bash
+# 检测 Python 命令
+if command -v python3 &> /dev/null; then
+    PYTHON_CMD="python3"
+elif command -v python &> /dev/null; then
+    PYTHON_CMD="python"
+else
+    # Windows 常见路径检测
+    for path in "/c/Program Files/Python312/python.exe" "/c/Python312/python.exe" "$LOCALAPPDATA/Programs/Python/Python312/python.exe"; do
+        if [ -f "$path" ]; then
+            PYTHON_CMD="$path"
+            break
+        fi
+    done
+fi
+
+# 验证 Python 版本
+$PYTHON_CMD --version 2>&1 | tail -1
+```
+
+**如果 Python 未安装**：
+- **Mac**: `brew install python3` 或从 python.org 下载
+- **Linux**: `sudo apt-get install python3` 或 `sudo yum install python3`
+- **Windows**: 从 https://www.python.org/downloads/ 下载并安装，勾选 "Add Python to PATH"
+
+#### Step 0-9: 完整初始化流程
+
+详见 `scripts/init_book.py` 源码，包含以下步骤：
+
+0. **Bookmark check**：计算 EPUB SHA256，检查是否已有进度
+1. **创建目录**：`state/` 和 `output/`
+2. **解压 EPUB**：使用 Python zipfile
+3. **解析元数据**：从 OPF 文件提取书名、作者
+4. **提取章节**：按 spine 顺序解析 HTML/XHTML
+5. **模式诊断**：基于章节数和内容特征
+6. **生成进度文件**：`state/{book_sha}-progress.json`
+7. **外部知识注入**：三层搜索（Wikipedia、评论、背景）
+8. **类型声明**：难度评级、阅读建议
+9. **创建输出目录**：`output/{book_sha}/`
+10. **宣布完成**：输出初始化摘要
 
 ---
 
