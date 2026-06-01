@@ -14,7 +14,7 @@ For each chapter (N from 1 to total_chapters):
 
 ### 1a. 进度条（开始时）
 
-进度条格式 → 详见 `references/component-progress-bar.md`（Standard Chapter Mode）
+进度条按字数加权计算（不按章节数均分）→ 详见 `references/component-progress-bar.md`
 
 格式：`[{第N部名} {进度条}] {N}/{total} 部`
 
