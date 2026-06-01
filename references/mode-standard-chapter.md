@@ -146,28 +146,10 @@ For each chapter (N from 1 to total_chapters):
 
 ### 5c. 保存章节记录
 
-写入 `output/{book_sha}/chapter-{N}.md`，格式：
+1. 写入 `output/{book_sha}/chapter-{N}.md`（独立章节文件）
+2. 追加到 `output/{book_sha}/reading-journal.md`（增量导出，防丢失）
 
-```markdown
-# 第{N}章：{章节名}
-
-## 引导角度
-{模板中文名}
-
-## 关键词
-{关键词}
-
-## 引导问题
-{问题}
-
-## 你的回答
-{用户回答，或"（跳过）"}
-
-## AI 参考
-> 证据：...
-> 分析：...
-> 延伸：...
-```
+格式 → `references/component-export.md`
 
 ### 5d. 更新计数器
 

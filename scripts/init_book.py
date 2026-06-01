@@ -521,6 +521,14 @@ def diagnose_mode(num_chapters, chapter_names=None, books_count=0):
             return 'standard_chapter', 'high', f'{books_count} 部连续叙事（单书结构）'
         return 'library', 'high', f'TOC 检测到 {books_count} 本独立书籍'
 
+    # 散文/随笔关键词（优先于小说合集检测）
+    essay_kw = ['散文', '随笔', '杂文', '书信', '日记', '札记', '笔记',
+                'essay', 'memoir', 'letter', 'diary', 'journal']
+    for name in names:
+        for kw in essay_kw:
+            if kw in name:
+                return 'essay', 'high', f'标题含散文关键词「{kw}」'
+
     # 合集关键词：标题含"篇""故事""短篇""小说集"等
     anthology_kw = ['篇', '故事', '短篇', '小说集', 'tale', 'story', 'stories',
                     '合集']
@@ -536,7 +544,7 @@ def diagnose_mode(num_chapters, chapter_names=None, books_count=0):
             if kw in name:
                 return 'library', 'high', f'标题含合集关键词「{kw}」'
 
-    # ── Priority 2: 章节数信号 ──
+    # ── Priority 2: 章节数 + 字数信号 ──
 
     if num_chapters == 0:
         return 'short', 'medium', '无章节'
@@ -546,6 +554,12 @@ def diagnose_mode(num_chapters, chapter_names=None, books_count=0):
 
     if num_chapters > 20:
         return 'grouped_epic', 'high', f'{num_chapters} 章，超过 20 章阈值'
+
+    # 少量章但标题含"部/卷/册" → 可能是大部头（如普鲁斯特单卷 3 部）
+    narrative_kw_strong = ['部', '卷', '册', 'Part', 'Volume', 'Book']
+    has_narrative_kw = any(any(kw in name for kw in narrative_kw_strong) for name in names)
+    if num_chapters <= 10 and has_narrative_kw:
+        return 'standard_chapter', 'high', f'{num_chapters} 部/卷，连续叙事结构'
 
     # ── Priority 3: 默认 ──
 
