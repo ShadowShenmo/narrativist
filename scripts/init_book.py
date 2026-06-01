@@ -433,22 +433,89 @@ def extract_single_file(extract_dir, file_name):
     return None
 
 
-def diagnose_mode(num_chapters, chapter_names=None):
-    """模式诊断"""
-    if num_chapters == 0:
-        return 'short'
-    if num_chapters == 1:
-        return 'short'
+def diagnose_mode(num_chapters, chapter_names=None, books_count=0):
+    """优先级 switch 模式诊断
 
-    if chapter_names:
-        anthology_kw = ['篇', '故事', '短篇', '小说', 'tale', 'story', 'stories']
-        if any(any(kw in n.lower() for kw in anthology_kw) for n in chapter_names):
-            return 'anthology'
+    返回 (mode, confidence, reason)
+      confidence: 'high' | 'medium' | 'low'
+      reason: 人类可读的判断依据
+
+    优先级：
+      1. TOC 结构信号（多书合集 / 关键词） → high
+      2. 章节数信号 → medium-high
+      3. 以上都不匹配 → low（需要进一步调查）
+    """
+    names = [n.lower() for n in (chapter_names or [])]
+
+    # ── Priority 1: TOC 结构信号（最可靠）──
+
+    # 多书合集：init_book.py 已检测到多个 L1 书籍
+    # 但要区分"多书合集"和"单书多部"：
+    #   - 标题含连续叙事关键词（第X部、第X章）→ standard_chapter
+    #   - 标题是独立书名 → library
+    if books_count > 1:
+        # 检查是否为连续叙事（单书多部）
+        narrative_kw = ['部', '章', '卷', 'part', 'chapter', 'volume']
+        sequential_count = sum(
+            1 for name in names
+            if any(kw in name for kw in narrative_kw)
+        )
+        # 如果大部分标题含叙事关键词，且总数 ≤ 5，视为单书多部
+        if books_count <= 5 and sequential_count >= books_count * 0.6:
+            return 'standard_chapter', 'high', f'{books_count} 部连续叙事（单书结构）'
+        return 'library', 'high', f'TOC 检测到 {books_count} 本独立书籍'
+
+    # 合集关键词：标题含"篇""故事""短篇""小说集"等
+    anthology_kw = ['篇', '故事', '短篇', '小说集', 'tale', 'story', 'stories',
+                    '选集', '合集', '文集']
+    for name in names:
+        for kw in anthology_kw:
+            if kw in name:
+                return 'anthology', 'high', f'标题含合集关键词「{kw}」'
+
+    # 嵌套合集关键词：标题含"卷""册""书""全集"等
+    library_kw = ['卷', '册', '全集', '选集', '文集']
+    for name in names:
+        for kw in library_kw:
+            if kw in name:
+                return 'library', 'high', f'标题含合集关键词「{kw}」'
+
+    # ── Priority 2: 章节数信号 ──
+
+    if num_chapters == 0:
+        return 'short', 'medium', '无章节'
+
+    if num_chapters == 1:
+        return 'short', 'medium', '单章文本（待阶段二确认是短篇还是中篇）'
 
     if num_chapters > 20:
-        return 'grouped_epic'
+        return 'grouped_epic', 'high', f'{num_chapters} 章，超过 20 章阈值'
 
-    return 'standard_chapter'
+    # ── Priority 3: 默认 ──
+
+    return 'standard_chapter', 'medium', f'{num_chapters} 章，连续叙事结构'
+
+
+def should_search_web(mode, confidence, books_count=0):
+    """判断是否需要网络搜索
+
+    返回 True 当：
+      - 置信度不是 high
+      - 或者是 library 模式（需要确认每本书的类型）
+    """
+    if confidence == 'high' and mode != 'library':
+        return False
+    if books_count > 1:
+        return True  # library 模式需要确认每本书的类型
+    return confidence != 'high'
+
+
+def should_ask_user(mode, confidence):
+    """判断是否需要询问用户
+
+    返回 True 当置信度为 low
+    """
+    return confidence == 'low'
 
 
 # ── 进度文件管理 ──────────────────────────────────────────────
@@ -557,8 +624,10 @@ def main():
         ch_names = [c['name'] for c in chapters]
         if len(init['books']) > 1:
             mode = 'standard_chapter'  # 单本书在 library 内用 standard_chapter
+            confidence = 'high'
+            reason = 'library 内的单本书'
         else:
-            mode = diagnose_mode(len(chapters), ch_names)
+            mode, confidence, reason = diagnose_mode(len(chapters), ch_names)
 
         progress.update({
             'book_sha': init['sha'],
@@ -597,7 +666,11 @@ def main():
             'book_name': book['name'],
             'chapters': len(chapters),
             'total_chars': total_chars,
-            'mode': mode
+            'mode': mode,
+            'confidence': confidence,
+            'reason': reason,
+            'need_web_search': should_search_web(mode, confidence),
+            'need_user_confirm': should_ask_user(mode, confidence)
         }
         print(f"\n{json.dumps(result, ensure_ascii=False)}")
         return
@@ -628,10 +701,14 @@ def main():
     output_dir = skill_dir / 'output' / sha
     os.makedirs(output_dir, exist_ok=True)
 
-    # 判断模式
-    if len(init['books']) > 1:
-        mode = 'library'
-        # 多书模式：生成 books 元数据
+    # 判断模式（优先级 switch）
+    books_count = len(init['books'])
+    book_names = [b['name'] for b in init['books']]
+
+    if books_count > 1:
+        # 多书：用 diagnose_mode 判断是 library 还是 standard_chapter
+        mode, confidence, reason = diagnose_mode(books_count, book_names, books_count)
+        # 生成 books 元数据
         books_meta = []
         for i, book in enumerate(init['books']):
             books_meta.append({
@@ -642,7 +719,11 @@ def main():
                 'estimated_chars': book.get('estimated_chars', 0)
             })
     else:
-        mode = 'standard_chapter'
+        # 单书：基于 TOC 章节数和关键词诊断
+        book = init['books'][0]
+        ch_names = [ch['name'] for ch in book.get('chapters', [])]
+        num_ch = len(ch_names) if ch_names else 1
+        mode, confidence, reason = diagnose_mode(num_ch, ch_names, books_count=1)
         books_meta = None
 
     # 生成空 progress.json（只有书籍元数据，无文本）
@@ -682,6 +763,7 @@ def main():
     print(f"作者: {init['author']}")
     print(f"书籍数: {len(init['books'])}")
     print(f"模式: {mode}")
+    print(f"置信度: {confidence} — {reason}")
     print(f"SHA256: {sha}")
     print("=" * 50)
 
@@ -691,6 +773,10 @@ def main():
         'title': init['title'],
         'author': init['author'],
         'mode': mode,
+        'confidence': confidence,
+        'reason': reason,
+        'need_web_search': should_search_web(mode, confidence, books_count),
+        'need_user_confirm': should_ask_user(mode, confidence),
         'books_count': len(init['books']),
         'books': books_meta
     }
