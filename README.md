@@ -1,7 +1,7 @@
 # narrativist
 
 > A narratology-powered deep reading engine for Claude Code.
-> 叙事学深度阅读引擎。五模式自诊断，十一类引导问题，优先级 switch 类型检测。
+> 叙事学深度阅读引擎。六模式自诊断，十一类引导问题，双维命中类型检测。
 
 [English](#english) | [中文](#中文)
 
@@ -54,7 +54,7 @@ git clone git@github.com:ShadowShenmo/narrativist.git ~/.claude/skills/narrativi
 
 #### How it works
 
-1. `init_book.py` runs Phase 1 (<1s): extracts EPUB, parses TOC, diagnoses mode via priority switch
+1. `init_book.py` runs Phase 1 (<1s): extracts EPUB, parses TOC, runs rule engine diagnosis + extracts diagnostic card for AI judgment
 2. For library collections: shows book list, user selects a book
 3. `init_book.py --extract N` runs Phase 2 (<1s): extracts selected book's text, preserves chapter boundaries
 4. Chapter loop: progress bar → character snapshot → pre-reading hook → one guiding question → reference answer → quiz → state update
@@ -71,11 +71,11 @@ git clone git@github.com:ShadowShenmo/narrativist.git ~/.claude/skills/narrativi
 
 ```
 narrativist/
-├── SKILL.md                         # Index & router (v2.3)
+├── SKILL.md                         # Index & router (v2.4)
 ├── README.md                        # This file
 ├── .claude-plugin/plugin.json       # Marketplace manifest
 ├── scripts/
-│   └── init_book.py                 # Two-phase initialization script
+│   └── init_book.py                 # Two-phase init + dual-dimension diagnosis
 ├── references/
 │   ├── guide-questions.md           # 11 templates + L1/L2/L3 strategy
 │   ├── mode-standard-chapter.md     # Standard chapter mode (≤20 chapters)
@@ -83,14 +83,16 @@ narrativist/
 │   ├── mode-anthology.md            # Short story collections
 │   ├── mode-library.md              # Multi-book collections (per-book state isolation)
 │   ├── mode-short-form.md           # Short stories & novellas (scaled by length)
+│   ├── mode-essay.md                # Essays/prose (E1/E2/E3 templates, imagery replaces characters)
 │   ├── component-quiz.md            # ABC quiz engine (shared)
 │   ├── component-progress-bar.md    # Progress visualization (shared)
-│   ├── component-export.md          # Reading journal export (shared)
+│   ├── component-export.md          # Incremental + final export (shared)
 │   ├── character-snapshot.md        # Character snapshot rules
 │   └── final-summary-template.md    # Book summary template
 └── state/                           # Runtime data
     ├── {sha}-progress.json          # Main state (library: books list + completion)
     ├── {sha}_book{N}-progress.json  # Per-book state (library mode)
+    ├── {sha}-diagnosis.json         # Diagnosis cache (rule + AI result)
     ├── {sha}-bookmark.json          # Session bookmark
     └── chapters/                    # Extracted chapter text files
 ```
@@ -144,7 +146,7 @@ git clone git@github.com:ShadowShenmo/narrativist.git ~/.claude/skills/narrativi
 
 #### 运行流程
 
-1. `init_book.py` 阶段一（<1秒）：解压 EPUB、解析 TOC、优先级 switch 诊断模式
+1. `init_book.py` 阶段一（<1秒）：解压 EPUB、解析 TOC、规则引擎诊断 + 提取诊断卡供 AI 判断
 2. 多书合集：展示图书馆视图，用户选书
 3. `init_book.py --extract N` 阶段二（<1秒）：提取选中书籍文本，保留章节边界
 4. 逐章循环：进度条 → 人物快照 → 读前提示 → 一个引导问题 → 参考回答 → 测验 → 状态更新
@@ -161,11 +163,11 @@ git clone git@github.com:ShadowShenmo/narrativist.git ~/.claude/skills/narrativi
 
 ```
 narrativist/
-├── SKILL.md                         # 索引总纲（v2.3）
+├── SKILL.md                         # 索引总纲（v2.4）
 ├── README.md                        # 本文档
 ├── .claude-plugin/plugin.json       # 市场元数据
 ├── scripts/
-│   └── init_book.py                 # 两阶段初始化脚本
+│   └── init_book.py                 # 两阶段初始化 + 双维命中诊断
 ├── references/
 │   ├── guide-questions.md           # 11类模板 + L1/L2/L3策略
 │   ├── mode-standard-chapter.md     # 标准章节模式（≤20章）
@@ -173,14 +175,16 @@ narrativist/
 │   ├── mode-anthology.md            # 短篇合集模式
 │   ├── mode-library.md              # 多书合集模式（每书独立状态）
 │   ├── mode-short-form.md           # 短篇中篇模式（按字数分级）
+│   ├── mode-essay.md                # 散文随笔模式（E1/E2/E3模板，意象替代人物）
 │   ├── component-quiz.md            # 测验组件（共享）
 │   ├── component-progress-bar.md    # 进度条（共享）
-│   ├── component-export.md          # 笔记导出（共享）
+│   ├── component-export.md          # 增量+完整导出（共享）
 │   ├── character-snapshot.md        # 人物快照规则
 │   └── final-summary-template.md    # 全书总结模板
 └── state/                           # 运行时数据
     ├── {sha}-progress.json          # 主状态（library: books列表+完成状态）
     ├── {sha}_book{N}-progress.json  # 每书独立状态（library模式）
+    ├── {sha}-diagnosis.json         # 诊断缓存（规则+AI结果）
     ├── {sha}-bookmark.json          # 会话书签
     └── chapters/                    # 提取的章节文本
 ```
