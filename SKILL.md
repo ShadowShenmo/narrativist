@@ -9,7 +9,7 @@ AIGC:
     ReservedCode2: XDn/ZbQaS6uXHWA4dk+ktb6n/kvJ28iZ4YrcNh2jm+fjf6CH87Vnzd7nalj0nTMMTMQ0O4bDI68T3sv62Qodc30VGEneUiGC9y9PGHJfjM3C1hEA+DVuIy+57jpjGygYEXL4YlSMQ1HuqbjGvV0ijeFsh3oE4Zjub8ngvmrJaxUG4NqoXsFxRfkMp4c=
 ---
 
-# Novel Reader
+# narrativist
 
 > v3.1 — 阅读引擎（单元制）
 

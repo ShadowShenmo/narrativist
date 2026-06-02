@@ -177,7 +177,7 @@ def slice_units(extract_dir, toc_entries, spine_items):
         for i, item in enumerate(spine_items):
             if item['media_type'] != 'application/xhtml+xml':
                 continue
-            file_path = find_file(extract_dir, item['href'])
+            file_path = find_files(extract_dir, item['href'])
             if not file_path:
                 continue
             text = extract_text(file_path)

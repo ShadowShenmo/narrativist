@@ -336,7 +336,7 @@ def main():
     # 10. 调用 unit_slicer 生成单元计划
     print("生成阅读单元...")
     slicer_path = Path(__file__).parent / 'unit_slicer.py'
-    os.system(f'python "{slicer_path}" "{state_dir}" "{sha}"')
+    os.system(f'{sys.executable} "{slicer_path}" "{state_dir}" "{sha}"')
 
     # 完成
     print("\n" + "=" * 50)

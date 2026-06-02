@@ -71,7 +71,7 @@ output/{sha}/book{N}/reading-journal.md # library 模式（每书独立）
 
 ---
 > 阅读完成：{日期}
-> 此笔记由 narrativist v2.3 自动生成
+> 此笔记由 narrativist v3.1 自动生成
 ```
 
 ## Library 模式导出
