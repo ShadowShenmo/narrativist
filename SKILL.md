@@ -153,6 +153,13 @@ output/{sha}/
 自动生成完整阅读笔记：
 → references/final-summary-template.md
 
+**洞察提炼**（必做）：
+1. 收集用户在阅读过程中的所有分享（每单元的输入、中途插入的想法）
+2. 按 references/component-insight-distill.md 的规则提炼
+3. 输出 3-6 条，每条 ≤20 字，不复述情节，只保留判断
+4. 展示给用户，用户可修改
+5. 写入 reading-journal.md 的「我的阅读总结」板块
+
 Library 模式：标记本书完成 → 展示图书馆进度 → 提示下一本。
 
 ## 跨会话恢复
