@@ -93,6 +93,44 @@ for unit in unit_plan.units:
        → references/component-export.md
 ```
 
+### 继续阅读命令（统一脚本）
+
+使用 `next_unit.py` 脚本获取当前单元信息，避免每次都需要用户确认：
+
+```bash
+python scripts/next_unit.py <state_dir> <sha> <book_index> [--advance]
+```
+
+**参数说明**：
+- `state_dir`：状态目录路径（如 `C:/Users/admin/.claude/skills/narrativist/state`）
+- `sha`：书籍的 SHA256 哈希值
+- `book_index`：书卷索引（Library 模式下为 1-16）
+- `--advance`：可选参数，添加后会自动将进度推进到下一单元
+
+**输出 JSON**：
+```json
+{
+  "unit_id": 469,
+  "title": "精神错乱·六",
+  "file": "Text/part0466.xhtml",
+  "anchor": "c016",
+  "word_count": 14107,
+  "chapter_path": "state/sha_extracted/OEBPS/Text/part0466.xhtml",
+  "current_unit": 469,
+  "total_units": 1680,
+  "book_index": 6
+}
+```
+
+**使用流程**：
+1. 用户说"继续" → 调用 `next_unit.py` 获取当前单元信息（不加 `--advance`）
+2. 读取 `chapter_path` 中的文本（使用 Read 工具）
+3. 根据文本特征选择引导观察
+4. 输出引导观察
+5. 用户确认后，调用 `next_unit.py --advance` 推进进度
+
+**优势**：命令模式固定，用户只需授权一次 `python scripts/next_unit.py *`，后续自动执行。
+
 ## 观察选择策略
 
 **不按书类型选，按当前单元文本特征选。**
