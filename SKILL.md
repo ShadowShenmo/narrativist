@@ -129,6 +129,13 @@ python scripts/next_unit.py <state_dir> <sha> <book_index> [--advance]
 4. 输出引导观察
 5. 用户确认后，调用 `next_unit.py --advance` 推进进度
 
+**跳过当前作品**：
+当用户说"读完了"、"跳过"、"下一篇"等表示要结束当前作品时：
+1. 读取当前 book 的 unit_plan，找到当前作品的结束单元
+2. 计算需要推进的次数 = 结束单元 - 当前单元
+3. 逐个调用 `next_unit.py --advance` 推进（不要用固定数字！）
+4. 确认已到达下一作品的起始单元
+
 **优势**：命令模式固定，用户只需授权一次 `python scripts/next_unit.py *`，后续自动执行。
 
 ## 观察选择策略
